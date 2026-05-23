@@ -2,10 +2,10 @@
 
 ## Deployment status
 
-- Verdict: `FAIL` (worker-build host-tooling blocker after WASM graph isolation)
+- Verdict: `PASS_WITH_WARNINGS` (worker-build path unblocked; publish blocked by Cloudflare account onboarding)
 - Target worker name: `mova-agent-api-v0`
-- Deployed URL: not available (deploy did not complete)
-- Deployed commit target: `719cec9` (with deployment adapter changes prepared locally)
+- Deployed URL: not available yet (`workers.dev` subdomain is not registered on the account)
+- Deployed commit target: `204bcf4` (plus local unblock changes in this task)
 
 ## What was prepared
 
@@ -17,6 +17,10 @@
   - `Cargo.toml`
 - Added Wrangler config:
   - `wrangler.toml`
+- Updated Wrangler custom build command to avoid reinstalling `worker-build` on each deploy:
+  - `worker-build --release --features worker`
+- Aligned `worker` crate version with locally available `worker-build`:
+  - `worker = "0.7.5"`
 
 Core business modules and V0 boundaries were not rewritten.
 
@@ -35,6 +39,16 @@ Core business modules and V0 boundaries were not rewritten.
 
 ### Dependency diagnostics
 
+- `worker-build --version`
+  - result: `worker-build 0.7.5` available on host.
+- `cargo install worker-build --locked`
+  - result: failed on Windows host while compiling `ring` C dependencies.
+- `rustup show`
+  - result: Windows GNU host toolchain active; wasm target available.
+- `rustup target list --installed`
+  - result: includes `wasm32-unknown-unknown`.
+- `npx wrangler --version`
+  - result: `4.85.0`.
 - `cargo tree -i ring`
   - result: no `ring` in MOVA Agent API crate dependency graph.
 - `cargo tree --target wasm32-unknown-unknown --features worker`
@@ -42,13 +56,16 @@ Core business modules and V0 boundaries were not rewritten.
 - `cargo build --target wasm32-unknown-unknown --features worker`
   - result: success after isolating non-WASM dependency path.
 
-### Deploy attempts (failed)
+### Deploy attempts (partially successful)
 
 - `npx wrangler deploy` (multiple attempts)
+  - custom build succeeded.
+  - worker upload succeeded.
+  - publish failed due to missing `workers.dev` subdomain registration on Cloudflare account.
 
 ## Blocking error summary
 
-Deploy now fails in Wrangler custom build pre-step only:
+Original blocker was in Wrangler custom build pre-step:
 
 - Build command:
   - `cargo install -q worker-build && worker-build --release --features worker`
@@ -61,9 +78,21 @@ Deploy now fails in Wrangler custom build pre-step only:
 
 This blocker is environment-level, not MOVA Agent API core/runtime logic.
 
+Current blocker after deploy-path fix:
+
+- Build/upload status:
+  - `worker-build` step: success.
+  - Worker upload: success (`Uploaded mova-agent-api-v0`).
+- Final publish failure:
+  - Cloudflare account has no registered `workers.dev` subdomain.
+  - Wrangler onboarding URL:
+    - `https://dash.cloudflare.com/b7d21e183c2afcd7e579e750f75e2ca7/workers/onboarding`
+- Failure class:
+  - account/environment onboarding, not code/dependency/toolchain.
+
 ## Smoke test status
 
-Not executed against Cloudflare URL because deployment artifact was not produced.
+Not executed against Cloudflare URL because routable `workers.dev` endpoint was not provisioned by Cloudflare account onboarding.
 
 ## Storage behavior/limitation note
 
@@ -80,7 +109,7 @@ Not executed against Cloudflare URL because deployment artifact was not produced
   - no live connector/provider integrations
   - no orchestration/dynamic routing/autonomous authority
 - Not completed:
-  - Cloudflare deployment proof run due local build-toolchain blocker
+  - Public endpoint smoke due missing account `workers.dev` registration
 
 ## What remains non-production
 
@@ -91,7 +120,7 @@ Not executed against Cloudflare URL because deployment artifact was not produced
 
 ## Next recommended promotion
 
-Unblock host toolchain for `worker-build` install (or preinstall trusted `worker-build` binary in CI/runtime image), then re-run:
+Complete Cloudflare account onboarding by registering a `workers.dev` subdomain, then re-run:
 
 1. `npx wrangler deploy`
 2. Smoke routes:
