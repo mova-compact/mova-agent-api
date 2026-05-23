@@ -7,13 +7,20 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["native"]
+native = []
 cloudflare_worker = ["dep:worker"]
+worker = ["cloudflare_worker"]
 
 [dependencies]
-axum = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.39", features = ["rt-multi-thread", "macros"] }
+worker = { version = "0.8.3", features = ["http"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = "0.7"
 tower = "0.5"
-worker = { version = "0.8.3", features = ["http", "axum"], optional = true }
+tokio = { version = "1.39", default-features = false, features = ["rt", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1.39", default-features = false, features = ["rt-multi-thread", "macros"] }

@@ -7,6 +7,7 @@ pub mod contracts;
 pub mod auth;
 pub mod evidence;
 pub mod execution;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 pub mod observation;
 pub mod policy;
@@ -15,5 +16,5 @@ pub mod runtime;
 pub mod secrets;
 pub mod storage;
 
-#[cfg(all(feature = "cloudflare_worker", target_arch = "wasm32"))]
+#[cfg(all(feature = "worker", target_arch = "wasm32"))]
 mod worker_adapter;

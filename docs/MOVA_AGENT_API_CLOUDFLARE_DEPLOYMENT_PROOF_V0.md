@@ -2,7 +2,7 @@
 
 ## Deployment status
 
-- Verdict: `FAIL` (environment build-tooling blocker)
+- Verdict: `FAIL` (worker-build host-tooling blocker after WASM graph isolation)
 - Target worker name: `mova-agent-api-v0`
 - Deployed URL: not available (deploy did not complete)
 - Deployed commit target: `719cec9` (with deployment adapter changes prepared locally)
@@ -11,7 +11,7 @@
 
 - Added Cloudflare Worker adapter shell:
   - `src/worker_adapter.rs`
-- Enabled optional Worker feature flags in Rust package:
+- Isolated Worker feature graph and added explicit Worker alias feature:
   - `Cargo.toml`
 - Enabled `cdylib` output for Worker build path:
   - `Cargo.toml`
@@ -33,21 +33,31 @@ Core business modules and V0 boundaries were not rewritten.
 
 - `npx wrangler whoami`
 
+### Dependency diagnostics
+
+- `cargo tree -i ring`
+  - result: no `ring` in MOVA Agent API crate dependency graph.
+- `cargo tree --target wasm32-unknown-unknown --features worker`
+  - result: feature graph resolves under explicit `worker` feature.
+- `cargo build --target wasm32-unknown-unknown --features worker`
+  - result: success after isolating non-WASM dependency path.
+
 ### Deploy attempts (failed)
 
 - `npx wrangler deploy` (multiple attempts)
 
 ## Blocking error summary
 
-Deploy fails during custom build step:
+Deploy now fails in Wrangler custom build pre-step only:
 
 - Build command:
-  - `cargo install -q worker-build && worker-build --release --features cloudflare_worker`
+  - `cargo install -q worker-build && worker-build --release --features worker`
 - Failure class:
-  - host toolchain/linker environment failure while compiling `worker-build` dependencies (`ring`)
+  - host toolchain/compiler environment failure while compiling `worker-build` dependencies (`ring`)
 - Observed symptoms:
-  - on GNU chain: `gcc.exe` compile invocation fails inside `ring` build
-  - on MSVC chain: `link.exe` invocation fails (non-MSVC linker behavior / missing proper VS toolchain environment)
+  - product build for wasm succeeds (`cargo build --target wasm32-unknown-unknown --features worker`).
+  - `ring` appears only while building the external tool `worker-build`, not in MOVA product graph.
+  - GNU host path still fails in `gcc.exe` invocation during `ring` C compilation.
 
 This blocker is environment-level, not MOVA Agent API core/runtime logic.
 
@@ -81,7 +91,7 @@ Not executed against Cloudflare URL because deployment artifact was not produced
 
 ## Next recommended promotion
 
-Unblock host build chain for `worker-build` in this environment, then re-run:
+Unblock host toolchain for `worker-build` install (or preinstall trusted `worker-build` binary in CI/runtime image), then re-run:
 
 1. `npx wrangler deploy`
 2. Smoke routes:

@@ -4,4 +4,4 @@ compatibility_date = "2026-05-23"
 workers_dev = true
 
 [build]
-command = "cargo install -q worker-build && worker-build --release --features cloudflare_worker"
+command = "cargo install -q worker-build && worker-build --release --features worker"
