@@ -1,0 +1,22 @@
+{
+  "connector_id": "connector.docs.v1",
+  "call_id": "call_01",
+  "request": {},
+  "auth_context": {},
+  "policy_result": {
+    "admission_id": "adm_01",
+    "action_id": "act_01",
+    "decision": "allow",
+    "reason_code": "ok",
+    "policy_version": "policy.default.v0",
+    "constraints": {},
+    "allowed_scopes": [],
+    "blocked_scopes": []
+  },
+  "status": "pending",
+  "response": {},
+  "timing": {
+    "started_at": "2026-05-23T10:00:00Z"
+  }
+}
+

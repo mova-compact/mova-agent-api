@@ -1,0 +1,15 @@
+{
+  "run_id": "run_01",
+  "step_id": "step_observation_write",
+  "event_type": "observation.write",
+  "timestamp": "2026-05-23T10:00:01Z",
+  "subject": {
+    "action_id": "act_01"
+  },
+  "result": {
+    "status": "ok"
+  },
+  "metadata": {},
+  "evidence_ref": "ev_01"
+}
+

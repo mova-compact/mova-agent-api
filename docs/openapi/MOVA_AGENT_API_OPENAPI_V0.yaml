@@ -1,0 +1,258 @@
+openapi: 3.0.3
+info:
+  title: MOVA Agent API V0
+  version: 0.1.0
+  description: >
+    Product-local API surface for controlled agent actions in MOVA Agent API V0.
+servers:
+  - url: https://api.mova-agent.local
+paths:
+  /capabilities:
+    get:
+      summary: Get supported capabilities
+      operationId: getCapabilities
+      responses:
+        "200":
+          description: Capability surface
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - action_types
+                  - policy_decisions
+                properties:
+                  action_types:
+                    type: array
+                    items:
+                      type: string
+                  policy_decisions:
+                    type: array
+                    items:
+                      type: string
+  /actions/validate:
+    post:
+      summary: Validate action request envelope without execution
+      operationId: validateAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestEnvelope"
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - valid
+                properties:
+                  valid:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+  /actions/run:
+    post:
+      summary: Run a single admitted action via flat path
+      operationId: runAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestEnvelope"
+      responses:
+        "202":
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - run_id
+                  - status
+                properties:
+                  run_id:
+                    type: string
+                  status:
+                    type: string
+  /runs/{run_id}:
+    get:
+      summary: Get run status and summary
+      operationId: getRun
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Run shape
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - run_id
+                  - status
+                properties:
+                  run_id:
+                    type: string
+                  status:
+                    type: string
+  /runs/{run_id}/evidence:
+    get:
+      summary: Get run evidence response
+      operationId: getRunEvidence
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Evidence response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidenceResponse"
+components:
+  schemas:
+    Action:
+      type: object
+      additionalProperties: false
+      required:
+        - action_id
+        - action_type
+        - target_kind
+        - policy_context
+        - connector_context
+        - trace_ref
+      properties:
+        action_id:
+          type: string
+        action_type:
+          type: string
+        target_kind:
+          type: string
+        input_ref:
+          type: string
+        input_payload:
+          type: object
+        policy_context:
+          type: object
+        connector_context:
+          type: object
+        trace_ref:
+          type: string
+    RequestEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - request_id
+        - actor
+        - source
+        - action
+        - inputs
+        - context
+        - correlation
+        - timestamps
+      properties:
+        request_id:
+          type: string
+        actor:
+          type: object
+          additionalProperties: false
+          required:
+            - actor_type
+            - actor_id
+          properties:
+            actor_type:
+              type: string
+            actor_id:
+              type: string
+        source:
+          type: object
+          additionalProperties: false
+          required:
+            - channel
+            - client_id
+          properties:
+            channel:
+              type: string
+            client_id:
+              type: string
+        action:
+          $ref: "#/components/schemas/Action"
+        inputs:
+          type: object
+        context:
+          type: object
+        correlation:
+          type: object
+        timestamps:
+          type: object
+    PolicySummary:
+      type: object
+      additionalProperties: false
+      required:
+        - decision
+        - policy_version
+        - reason_code
+      properties:
+        decision:
+          type: string
+          enum:
+            - allow
+            - deny
+            - require_review
+            - redact
+        policy_version:
+          type: string
+        reason_code:
+          type: string
+    EvidenceResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - status
+        - result
+        - evidence
+        - trace_ref
+        - observation_refs
+        - policy_summary
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - in_progress
+            - completed
+            - failed
+            - blocked
+        result:
+          type: object
+        evidence:
+          type: object
+        trace_ref:
+          type: string
+        observation_refs:
+          type: array
+          items:
+            type: string
+        policy_summary:
+          $ref: "#/components/schemas/PolicySummary"

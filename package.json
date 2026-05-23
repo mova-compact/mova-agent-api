@@ -2,11 +2,14 @@
   "name": "mova-agent-api-phase1",
   "version": "0.1.0",
   "private": true,
-  "description": "Validation tooling for MOVA Agent API V0 Phase 1 schemas.",
+  "description": "Validation tooling for MOVA Agent API V0 schemas and OpenAPI surface.",
   "scripts": {
-    "validate:examples": "ajv validate --spec=draft2020 -c ajv-formats -s schemas/request_envelope.schema.json -r schemas/action.schema.json -d examples/agent_request_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/policy_admission.schema.json -d examples/policy_admission_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/evidence_response.schema.json -d examples/evidence_response_minimal.json --strict=false"
+    "validate:examples": "ajv validate --spec=draft2020 -c ajv-formats -s schemas/request_envelope.schema.json -r schemas/action.schema.json -d examples/agent_request_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/policy_admission.schema.json -d examples/policy_admission_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/connector_call.schema.json -r schemas/policy_admission.schema.json -d examples/connector_call_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/observation_record.schema.json -d examples/observation_record_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/evidence_response.schema.json -d examples/evidence_response_minimal.json --strict=false",
+    "validate:openapi": "swagger-cli validate docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml",
+    "validate:all": "npm run validate:examples && npm run validate:openapi"
   },
   "devDependencies": {
+    "@apidevtools/swagger-cli": "^4.0.4",
     "ajv-cli": "^5.0.0",
     "ajv-formats": "^3.0.1"
   }
