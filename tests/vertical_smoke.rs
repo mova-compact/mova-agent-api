@@ -6,6 +6,7 @@ use mova_agent_api::execution::FlatExecutionPlan;
 use mova_agent_api::observation::{ObservationJournal, ObservationRecord};
 use mova_agent_api::policy::{AdmissionDecision, PolicyAdmission};
 use mova_agent_api::request::parse_request_envelope;
+use mova_agent_api::secrets::{SecretRef, SecretRefKind};
 
 #[test]
 fn vertical_smoke_single_action_path() {
@@ -50,6 +51,10 @@ fn vertical_smoke_single_action_path() {
             side_effect_intent: SideEffectIntent::None,
             request: serde_json::json!({"document_id":"doc_123"}),
             auth_context: serde_json::json!({}),
+            credential_refs: vec![SecretRef {
+                kind: SecretRefKind::SecretRef,
+                reference: "secret://connector/docs".to_string(),
+            }],
             policy_result: admission.to_summary(),
             started_at: "2026-05-23T09:30:00Z".to_string(),
         })

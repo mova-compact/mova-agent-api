@@ -11,7 +11,9 @@ use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
-use crate::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
+use crate::runtime::RuntimeConfig;
+use crate::secrets::{redact_json, redact_text, SecretRef, SecretRefKind};
+use crate::auth::{create_auth_verifier, AuthVerifier};
 use crate::storage::{create_run_store, RunSnapshot, RunStore, StorageConfig, StorageError};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -98,13 +100,11 @@ pub fn router_with_state(state: AppState) -> Router {
 
 impl AppState {
     pub fn new() -> Self {
-        let config = AuthTrustConfig::default_v0();
-        let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&config));
-        let storage = StorageConfig::in_memory_default();
-        let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&storage));
-        let connector_config = ConnectorExecutionConfig::deterministic_local_default();
+        let runtime = RuntimeConfig::deterministic_local_default();
+        let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&runtime.auth));
+        let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&runtime.storage));
         let connector_executor: Arc<dyn ConnectorExecutor> =
-            Arc::from(create_connector_executor(&connector_config));
+            Arc::from(create_connector_executor(&runtime.connectors));
         Self {
             run_store,
             auth_verifier: verifier,
@@ -245,7 +245,7 @@ fn storage_unavailable(err: &StorageError) -> (StatusCode, Json<ErrorResponse>) 
                 message: "storage adapter failed".to_string(),
                 details: vec![
                     format!("storage_code: {}", err.code),
-                    format!("storage_message: {}", err.message),
+                    format!("storage_message: {}", redact_text(&err.message)),
                 ],
             },
         }),
@@ -266,7 +266,7 @@ fn connector_unavailable(err: &ConnectorExecutionError) -> (StatusCode, Json<Err
                 message: "connector execution failed".to_string(),
                 details: vec![
                     format!("connector_code: {}", err.code),
-                    format!("connector_message: {}", err.message),
+                    format!("connector_message: {}", redact_text(&err.message)),
                 ],
             },
         }),
@@ -340,8 +340,9 @@ async fn post_actions_run(
         connector_id,
         call_id: format!("call_{}", envelope.request_id),
         side_effect_intent,
-        request: envelope.action.input_payload.clone().unwrap_or_else(|| json!({})),
-        auth_context: serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({})),
+        request: redact_json(&envelope.action.input_payload.clone().unwrap_or_else(|| json!({}))),
+        auth_context: redact_json(&serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({}))),
+        credential_refs: extract_credential_refs(&envelope.action.connector_context),
         policy_result: admission.to_summary(),
         started_at: "2026-05-23T10:30:00Z".to_string(),
     }) {
@@ -362,10 +363,15 @@ async fn post_actions_run(
         result: json!({
             "status": "ok",
             "connector_status": connector_call.status,
-            "connector_response": connector_call.response
+            "connector_response": redact_json(&connector_call.response)
         }),
         metadata: json!({
-            "side_effect_intent": connector_call.side_effect_intent
+            "side_effect_intent": connector_call.side_effect_intent,
+            "credential_ref_count": connector_call
+                .response
+                .get("credential_ref_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
         }),
         evidence_ref: format!("ev_{}", envelope.request_id),
     });
@@ -410,6 +416,33 @@ fn parse_side_effect_intent(connector_context: &Value) -> Option<SideEffectInten
         "destructive" => Some(SideEffectIntent::Destructive),
         _ => None,
     }
+}
+
+fn extract_credential_refs(connector_context: &Value) -> Vec<SecretRef> {
+    connector_context
+        .get("credential_refs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let kind = item.get("kind")?.as_str()?;
+                    let reference = item.get("reference")?.as_str()?.to_string();
+                    let kind = match kind {
+                        "secret_ref" => SecretRefKind::SecretRef,
+                        "env_ref" => SecretRefKind::EnvRef,
+                        "runtime_secret" => SecretRefKind::RuntimeSecret,
+                        _ => return None,
+                    };
+                    let secret = SecretRef { kind, reference };
+                    if secret.validate().is_ok() {
+                        Some(secret)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn with_auth_from_headers(mut payload: Value, headers: &HeaderMap) -> Value {

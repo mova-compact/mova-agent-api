@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/runtime_config.schema.json",
+  "title": "MOVA Agent API V0 Runtime Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "auth",
+    "storage",
+    "connectors"
+  ],
+  "properties": {
+    "auth": {
+      "$ref": "./auth_trust_config.schema.json"
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_kind"
+      ],
+      "properties": {
+        "adapter_kind": {
+          "type": "string",
+          "enum": [
+            "in_memory",
+            "file_backed_local"
+          ]
+        },
+        "base_path": {
+          "type": "string"
+        }
+      }
+    },
+    "connectors": {
+      "$ref": "./connector_execution_config.schema.json"
+    }
+  }
+}

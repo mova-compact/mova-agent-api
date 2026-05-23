@@ -39,5 +39,7 @@ Status: active V0 boundary freeze
 
 - Stop before adding transport-owned authorization.
 - Stop before adding deployment-coupled production storage.
+- Stop before adding transport-owned runtime config or secret handling.
+- Stop before integrating cloud/runtime secret providers without explicit promotion.
 - Stop before adding real external connector execution.
 - Stop before adding scheduling, orchestration, dynamic routing, or agent-owned decisions.

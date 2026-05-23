@@ -22,7 +22,11 @@ fn minimal_request_body() -> String {
             "connector_context": {
               "connector_set": ["connector.docs.v1"],
               "connector_id": "connector.docs.v1",
-              "side_effect_intent": "none"
+              "side_effect_intent": "none",
+              "credential_refs": [
+                {"kind":"secret_ref","reference":"secret://connector/docs"},
+                {"kind":"env_ref","reference":"env://MOVA_CONNECTOR_TOKEN"}
+              ]
             },
             "trace_ref": "trace:req_http_01"
         },
@@ -627,6 +631,71 @@ async fn get_run_evidence_returns_evidence_for_created_run() {
     assert_eq!(json["run_id"], "run_req_http_01");
     assert_eq!(json["trace_ref"], "trace:req_http_01");
     assert_eq!(json["result"]["connector_status"], "completed");
+}
+
+#[tokio::test]
+async fn evidence_redacts_secret_like_fields() {
+    let app = router();
+    let secret_payload = serde_json::json!({
+        "request_id": "req_http_secret_01",
+        "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
+        "source": {"channel": "api", "client_id": "client_001"},
+        "action": {
+            "action_id": "act_secret_01",
+            "action_type": "validate_document",
+            "target_kind": "document",
+            "input_payload": {
+              "document_id": "doc_123",
+              "token_ref": "token://raw/secret?aud=mova-agent-api",
+              "api_key": "raw-key"
+            },
+            "policy_context": {"policy_profile_ref": "policy.default.v0"},
+            "connector_context": {
+              "connector_set": ["connector.docs.v1"],
+              "connector_id": "connector.docs.v1",
+              "side_effect_intent": "none",
+              "credential_refs": [{"kind":"runtime_secret","reference":"runtime://connector/docs"}]
+            },
+            "trace_ref": "trace:req_http_secret_01"
+        },
+        "inputs": {"document_id": "doc_123"},
+        "context": {"tenant_id": "tenant_001"},
+        "correlation": {"trace_id": "trace_abc123"},
+        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
+    })
+    .to_string();
+
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(secret_payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::ACCEPTED);
+
+    let evidence_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_secret_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence_response.status(), StatusCode::OK);
+    let body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let connector_result = &json["evidence"]["connector_result"];
+    assert_eq!(connector_result["credential_ref_count"], "[REDACTED]");
+    assert!(connector_result.get("api_key").is_none());
+    assert!(connector_result.get("token_ref").is_none());
 }
 
 #[tokio::test]

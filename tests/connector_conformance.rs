@@ -3,6 +3,7 @@ use mova_agent_api::connectors::{
     OfflineStubRule, SideEffectIntent,
 };
 use mova_agent_api::policy::{AdmissionDecision, PolicySummary};
+use mova_agent_api::secrets::{SecretRef, SecretRefKind};
 use serde_json::json;
 
 fn request(connector_id: &str, intent: SideEffectIntent) -> ConnectorExecutionRequest {
@@ -12,6 +13,10 @@ fn request(connector_id: &str, intent: SideEffectIntent) -> ConnectorExecutionRe
         side_effect_intent: intent,
         request: json!({"document_id":"doc_123"}),
         auth_context: json!({}),
+        credential_refs: vec![SecretRef {
+            kind: SecretRefKind::SecretRef,
+            reference: "secret://connector/docs".to_string(),
+        }],
         policy_result: PolicySummary {
             decision: AdmissionDecision::Allow,
             policy_version: "policy.default.v0".to_string(),

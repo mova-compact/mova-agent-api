@@ -4,6 +4,7 @@
 //! side-effect intent guardrails and provider-agnostic adapter contracts.
 
 use crate::policy::PolicySummary;
+use crate::secrets::SecretRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -55,6 +56,7 @@ pub struct ConnectorExecutionRequest {
     pub side_effect_intent: SideEffectIntent,
     pub request: Value,
     pub auth_context: Value,
+    pub credential_refs: Vec<SecretRef>,
     pub policy_result: PolicySummary,
     pub started_at: String,
 }
@@ -180,12 +182,14 @@ impl ConnectorExecutor for DeterministicLocalConnectorExecutor {
             side_effect_intent: request.side_effect_intent,
             request: request.request,
             auth_context: request.auth_context,
+            // Credential refs are contract-only in V0. No raw secret resolution is performed.
             policy_result: request.policy_result,
             status: ConnectorCallStatus::Completed,
             response: json!({
                 "connector_mode": "deterministic_local",
                 "side_effect_performed": false,
-                "outcome": "ok"
+                "outcome": "ok",
+                "credential_ref_count": request.credential_refs.len()
             }),
             timing: ConnectorTiming {
                 started_at: request.started_at,
@@ -237,7 +241,8 @@ impl ConnectorExecutor for OfflineStubConnectorExecutor {
             response: json!({
                 "connector_mode": "offline_stub",
                 "side_effect_performed": false,
-                "outcome": "stubbed"
+                "outcome": "stubbed",
+                "credential_ref_count": request.credential_refs.len()
             }),
             timing: ConnectorTiming {
                 started_at: request.started_at,
@@ -302,6 +307,7 @@ mod tests {
             side_effect_intent: intent,
             request: json!({"doc_id":"1"}),
             auth_context: json!({}),
+            credential_refs: Vec::new(),
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
                 policy_version: "policy.default.v0".to_string(),

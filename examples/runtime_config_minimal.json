@@ -1,0 +1,30 @@
+{
+  "auth": {
+    "verifier_kind": "deterministic_local",
+    "trusted_issuers": [
+      "mova-trusted"
+    ],
+    "trusted_audiences": [
+      "mova-agent-api"
+    ],
+    "allowed_scopes": [
+      "actions.run",
+      "actions.validate"
+    ],
+    "offline_stub_fixtures": []
+  },
+  "storage": {
+    "adapter_kind": "in_memory"
+  },
+  "connectors": {
+    "adapter_kind": "deterministic_local",
+    "allowed_connectors": [
+      "connector.docs.v1"
+    ],
+    "allowed_side_effect_intents": [
+      "none",
+      "local_only"
+    ],
+    "offline_stub_rules": []
+  }
+}
