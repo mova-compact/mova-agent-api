@@ -2,11 +2,11 @@
 
 ## Deployment status
 
-- Verdict: `PASS` (deployment complete with Cloudflare KV-backed cross-request run persistence)
+- Verdict: `PASS` (deployment complete with Cloudflare KV persistence and controlled Webhook.site external connector proof)
 - Target worker name: `mova-agent-api-v0`
 - workers.dev subdomain chosen: `s-myasoedov81.workers.dev` (account-level existing subdomain)
 - Deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
-- Deployed commit target: `74bbd48` + Cloudflare KV persistence promotion changes
+- Deployed commit target: `59314b5` + Webhook.site connector provider promotion changes
 
 ## What was prepared
 
@@ -26,6 +26,8 @@
   - `CloudflareKvRunStore` (KV binding `MOVA_RUN_STORE`)
 - Registered and bound Cloudflare KV namespace:
   - `a276a02220fd43ff938eb4ff6b82e0a7`
+- Added Worker runtime var for external connector allowlist:
+  - `MOVA_WEBHOOK_SITE_ALLOWED_URL=https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
 
 Core business modules and V0 boundaries were not rewritten.
 
@@ -70,7 +72,7 @@ Core business modules and V0 boundaries were not rewritten.
   - worker upload succeeded.
   - publish succeeded.
   - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
-  - active version: `a9ff1524-3da2-4d78-9ef7-f9424ef0fec7`
+  - active version: `8aac950f-982c-4ac7-b233-f7c988269521`
 
 ## Blocking error summary
 
@@ -119,11 +121,36 @@ Smoke executed against deployed URL (separate HTTP requests):
   - status: success
   - result: deterministic evidence returned with policy summary and connector result.
 
+Webhook.site provider smoke:
+
+- Allowlisted URL: `https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
+- `POST /actions/run` using:
+  - `connector_id=connector.webhook_site.v1`
+  - `side_effect_intent=external_network`
+  - `target_url` equal to allowlisted Webhook.site URL
+- API run result:
+  - `run_id=run_req_webhook_1779546805`
+  - `status=completed`
+- Cross-request retrieval:
+  - `GET /runs/run_req_webhook_1779546805` -> success
+  - `GET /runs/run_req_webhook_1779546805/evidence` -> success
+- Evidence connector summary includes:
+  - `connector_mode=webhook_site`
+  - `provider=webhook.site`
+  - `http_status=200`
+  - `request_correlation_id=corr:req_webhook_1779546805`
+  - `side_effect_performed=true`
+- External receipt confirmation:
+  - Webhook.site latest request UUID: `4deaac6f-36fc-44d6-8814-06bf5e4297bc`
+  - Received body contains matching:
+    - `run_id=run_req_webhook_1779546805`
+    - `correlation_id=corr:req_webhook_1779546805`
+
 Secret-safety and side-effect checks:
 
 - No raw secret material appeared in returned payloads.
-- Connector result confirmed deterministic local mode and `side_effect_performed=false`.
-- No live external connector side effects observed.
+- Webhook connector result is explicit and allowlisted; no credentials were used.
+- Live side effect occurred only to configured Webhook.site endpoint.
 
 ## Storage behavior/limitation note
 
@@ -144,7 +171,7 @@ Secret-safety and side-effect checks:
 
 ## What remains non-production
 
-- No real external connector calls
+- External connector execution is promoted only for one allowlisted Webhook.site endpoint
 - No production auth provider integration
 - Cloudflare KV promoted only as Worker run/evidence persistence adapter
 - No D1/R2 promotion
