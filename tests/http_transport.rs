@@ -333,6 +333,7 @@ async fn post_actions_run_uses_explicit_invalid_verifier_config_path() {
         trusted_issuers: vec!["mova-trusted".to_string()],
         trusted_audiences: vec!["mova-agent-api".to_string()],
         allowed_scopes: vec!["actions.run".to_string()],
+        offline_stub_fixtures: Vec::new(),
     };
     let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&invalid_config));
     let app = router_with_state(AppState::with_auth_verifier(verifier));

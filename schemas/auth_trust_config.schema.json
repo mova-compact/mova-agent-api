@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/auth_trust_config.schema.json",
+  "title": "MOVA Agent API V0 Auth Trust Config",
+  "description": "Provider-agnostic trust configuration for auth verifier adapter selection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verifier_kind",
+    "trusted_issuers",
+    "trusted_audiences",
+    "allowed_scopes",
+    "offline_stub_fixtures"
+  ],
+  "properties": {
+    "verifier_kind": {
+      "type": "string",
+      "enum": [
+        "deterministic_local",
+        "offline_provider_stub"
+      ]
+    },
+    "trusted_issuers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "trusted_audiences": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowed_scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "offline_stub_fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "token_ref",
+          "status",
+          "reason_code",
+          "scopes"
+        ],
+        "properties": {
+          "token_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified"
+            ]
+          },
+          "reason_code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audience": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

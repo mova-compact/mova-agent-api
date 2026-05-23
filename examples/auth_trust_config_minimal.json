@@ -1,0 +1,14 @@
+{
+  "verifier_kind": "deterministic_local",
+  "trusted_issuers": [
+    "mova-trusted"
+  ],
+  "trusted_audiences": [
+    "mova-agent-api"
+  ],
+  "allowed_scopes": [
+    "actions.run",
+    "actions.validate"
+  ],
+  "offline_stub_fixtures": []
+}
