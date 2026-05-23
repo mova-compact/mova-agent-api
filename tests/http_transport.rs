@@ -321,6 +321,40 @@ async fn post_actions_run_returns_validation_error_shape() {
 }
 
 #[tokio::test]
+async fn post_actions_run_validation_failure_does_not_create_run_snapshot() {
+    let app = router();
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(invalid_dual_input_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::BAD_REQUEST);
+
+    let get_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_dual_01")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(get_response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "run_not_found");
+}
+
+#[tokio::test]
 async fn post_actions_validate_returns_semantic_validation_error_shape() {
     let app = router();
     let response = app
