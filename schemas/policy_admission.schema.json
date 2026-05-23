@@ -93,8 +93,7 @@
           "minLength": 1
         },
         "verified": {
-          "type": "boolean",
-          "const": false
+          "type": "boolean"
         }
       }
     }

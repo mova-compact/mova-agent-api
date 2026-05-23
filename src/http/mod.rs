@@ -6,8 +6,9 @@ use crate::connectors::build_connector_call;
 use crate::evidence::{build_evidence_response, EvidenceResponse, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
-use crate::policy::PolicyAdmission;
+use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
+use crate::auth::{AuthVerifier, DeterministicAuthVerifier};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -30,9 +31,10 @@ pub struct AuthPlaceholder {
     pub enforced: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     runs: Arc<Mutex<HashMap<String, RunSnapshot>>>,
+    auth_verifier: Arc<dyn AuthVerifier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +101,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
+            auth_verifier: Arc::new(DeterministicAuthVerifier::default_v0()),
         }
     }
 
@@ -222,8 +225,26 @@ async fn post_actions_run(
         format!("adm_{}", envelope.request_id),
         envelope.action.action_id.clone(),
         "policy.default.v0".to_string(),
+        "actions.run",
         envelope.auth_context.clone(),
+        state.auth_verifier.as_ref(),
     );
+    if admission.decision != AdmissionDecision::Allow {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "authorization_failed".to_string(),
+                    message: "policy authorization failed".to_string(),
+                    details: vec![
+                        format!("reason_code: {}", admission.reason_code),
+                        format!("decision: {:?}", admission.decision),
+                    ],
+                },
+            }),
+        )
+            .into_response();
+    }
 
     let _plan = FlatExecutionPlan::from_action(run_id.clone(), envelope.action.action_id.clone());
     let connector_call = build_connector_call(

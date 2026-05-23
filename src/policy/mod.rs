@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::auth::{AuthVerificationResult, AuthVerificationStatus, AuthVerifier};
 use crate::request::AuthContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,28 +64,69 @@ impl PolicyAdmission {
         admission_id: String,
         action_id: String,
         policy_version: String,
+        required_scope: &str,
         auth_context: Option<AuthContext>,
+        verifier: &dyn AuthVerifier,
     ) -> Self {
         let normalized = placeholder_auth_context(auth_context);
-        let reason_code = if normalized.source.as_deref() == Some("header") {
-            "ok_auth_placeholder_header"
-        } else if normalized.source.as_deref() == Some("request") {
-            "ok_auth_placeholder_request"
+
+        let (decision, reason_code, auth_verification, allowed_scopes, blocked_scopes) = if normalized.mode == "production" {
+            let verification = verifier.verify(&normalized);
+            if verification.status != AuthVerificationStatus::Verified {
+                (
+                    AdmissionDecision::Deny,
+                    "auth_unverified".to_string(),
+                    verification,
+                    Vec::new(),
+                    vec![required_scope.to_string()],
+                )
+            } else if !verification.scopes.iter().any(|scope| scope == required_scope) {
+                (
+                    AdmissionDecision::Deny,
+                    "scope_denied".to_string(),
+                    verification,
+                    Vec::new(),
+                    vec![required_scope.to_string()],
+                )
+            } else {
+                (
+                    AdmissionDecision::Allow,
+                    "authorized".to_string(),
+                    verification.clone(),
+                    verification.scopes.clone(),
+                    Vec::new(),
+                )
+            }
         } else {
-            "ok_auth_placeholder_none"
+            let reason_code = if normalized.source.as_deref() == Some("header") {
+                "ok_auth_placeholder_header"
+            } else if normalized.source.as_deref() == Some("request") {
+                "ok_auth_placeholder_request"
+            } else {
+                "ok_auth_placeholder_none"
+            };
+
+            (
+                AdmissionDecision::Allow,
+                reason_code.to_string(),
+                AuthVerificationResult::unverified("auth_not_required"),
+                normalized.scopes.clone(),
+                Vec::new(),
+            )
         };
 
         Self {
             admission_id,
             action_id,
-            decision: AdmissionDecision::Allow,
-            reason_code: reason_code.to_string(),
+            decision,
+            reason_code,
             policy_version,
             constraints: serde_json::json!({
-                "auth_context": normalized.clone()
+                "auth_context": normalized.clone(),
+                "auth_verification": auth_verification
             }),
-            allowed_scopes: normalized.scopes.clone(),
-            blocked_scopes: Vec::new(),
+            allowed_scopes,
+            blocked_scopes,
             auth_context: normalized,
         }
     }
@@ -126,6 +168,7 @@ fn placeholder_auth_context(auth_context: Option<AuthContext>) -> AuthContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::DeterministicAuthVerifier;
 
     #[test]
     fn policy_admission_new_sets_default_shape() {
@@ -188,6 +231,7 @@ mod tests {
             "adm_03".to_string(),
             "act_03".to_string(),
             "policy.default.v0".to_string(),
+            "actions.run",
             Some(AuthContext {
                 mode: "".to_string(),
                 actor_id: Some("agent_001".to_string()),
@@ -196,11 +240,80 @@ mod tests {
                 source: Some("header".to_string()),
                 verified: true,
             }),
+            &DeterministicAuthVerifier::default_v0(),
         );
 
         assert_eq!(admission.auth_context.mode, "placeholder");
         assert!(!admission.auth_context.verified);
         assert_eq!(admission.reason_code, "ok_auth_placeholder_header");
         assert_eq!(admission.allowed_scopes, vec!["actions.validate"]);
+    }
+
+    #[test]
+    fn policy_admission_denies_unverified_production_auth() {
+        let verifier = DeterministicAuthVerifier::default_v0();
+        let admission = PolicyAdmission::from_auth_context(
+            "adm_04".to_string(),
+            "act_04".to_string(),
+            "policy.default.v0".to_string(),
+            "actions.run",
+            Some(AuthContext {
+                mode: "production".to_string(),
+                actor_id: Some("agent_001".to_string()),
+                token_ref: Some("token://untrusted/agent_001".to_string()),
+                scopes: vec!["actions.run".to_string()],
+                source: Some("header".to_string()),
+                verified: false,
+            }),
+            &verifier,
+        );
+        assert_eq!(admission.decision, AdmissionDecision::Deny);
+        assert_eq!(admission.reason_code, "auth_unverified");
+        assert_eq!(admission.blocked_scopes, vec!["actions.run"]);
+    }
+
+    #[test]
+    fn policy_admission_denies_when_required_scope_is_missing() {
+        let verifier = DeterministicAuthVerifier::default_v0();
+        let admission = PolicyAdmission::from_auth_context(
+            "adm_05".to_string(),
+            "act_05".to_string(),
+            "policy.default.v0".to_string(),
+            "actions.run",
+            Some(AuthContext {
+                mode: "production".to_string(),
+                actor_id: Some("agent_001".to_string()),
+                token_ref: Some("token://mova-trusted/agent_001".to_string()),
+                scopes: vec!["actions.validate".to_string()],
+                source: Some("header".to_string()),
+                verified: false,
+            }),
+            &verifier,
+        );
+        assert_eq!(admission.decision, AdmissionDecision::Deny);
+        assert_eq!(admission.reason_code, "scope_denied");
+    }
+
+    #[test]
+    fn policy_admission_allows_verified_production_auth_with_required_scope() {
+        let verifier = DeterministicAuthVerifier::default_v0();
+        let admission = PolicyAdmission::from_auth_context(
+            "adm_06".to_string(),
+            "act_06".to_string(),
+            "policy.default.v0".to_string(),
+            "actions.run",
+            Some(AuthContext {
+                mode: "production".to_string(),
+                actor_id: Some("agent_001".to_string()),
+                token_ref: Some("token://mova-trusted/agent_001".to_string()),
+                scopes: vec!["actions.run".to_string()],
+                source: Some("header".to_string()),
+                verified: false,
+            }),
+            &verifier,
+        );
+        assert_eq!(admission.decision, AdmissionDecision::Allow);
+        assert_eq!(admission.reason_code, "authorized");
+        assert_eq!(admission.allowed_scopes, vec!["actions.run"]);
     }
 }

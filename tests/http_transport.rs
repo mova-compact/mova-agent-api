@@ -226,6 +226,105 @@ async fn post_actions_run_passes_header_auth_metadata_into_policy_input() {
 }
 
 #[tokio::test]
+async fn post_actions_run_rejects_unverified_production_auth() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .header("x-mova-auth-mode", "production")
+                .header("x-mova-token-ref", "token://untrusted/agent_001")
+                .header("x-mova-scopes", "actions.run")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "authorization_failed");
+    assert!(
+        json["error"]["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d.as_str().unwrap().contains("auth_unverified"))
+    );
+}
+
+#[tokio::test]
+async fn post_actions_run_rejects_production_auth_without_required_scope() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .header("x-mova-auth-mode", "production")
+                .header("x-mova-token-ref", "token://mova-trusted/agent_001")
+                .header("x-mova-scopes", "actions.validate")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "authorization_failed");
+    assert!(
+        json["error"]["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d.as_str().unwrap().contains("scope_denied"))
+    );
+}
+
+#[tokio::test]
+async fn post_actions_run_allows_verified_production_auth() {
+    let app = router();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .header("x-mova-auth-mode", "production")
+                .header("x-mova-token-ref", "token://mova-trusted/agent_001")
+                .header("x-mova-scopes", "actions.run")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    let evidence_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence_response.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(evidence_json["policy_summary"]["reason_code"], "authorized");
+}
+
+#[tokio::test]
 async fn get_run_returns_status_for_created_run() {
     let app = router();
     let _ = app
