@@ -54,3 +54,10 @@ Canonical execution path:
 
 - `_mova_meta/docs/MOVA_AGENT_API_EXTRACTION_AUDIT_V0.md`
 
+## Documentation quick links
+
+- `docs/MOVA_AGENT_API_V0_HANDBOOK.md` - operator/user troubleshooting handbook
+- `docs/MOVA_AGENT_API_DOCS_INDEX_V0.md` - full docs map (user-facing vs internal)
+- `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml` - public API contract
+- `schemas/` + `examples/` - schema and payload references
+- `scripts/smoke_public_api.ps1` - public deployment smoke script
