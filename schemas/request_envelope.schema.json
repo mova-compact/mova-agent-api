@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/request_envelope.schema.json",
+  "title": "MOVA Agent API V0 Request Envelope",
+  "description": "Inbound request envelope for controlled agent actions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "actor",
+    "source",
+    "action",
+    "inputs",
+    "context",
+    "correlation",
+    "timestamps"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_type",
+        "actor_id"
+      ],
+      "properties": {
+        "actor_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel",
+        "client_id"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "action": {
+      "$ref": "./action.schema.json"
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_request_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_at"
+      ],
+      "properties": {
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deadline_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}
+

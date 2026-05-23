@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/policy_admission.schema.json",
+  "title": "MOVA Agent API V0 Policy Admission",
+  "description": "Admission result for a single action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "admission_id",
+    "action_id",
+    "decision",
+    "reason_code",
+    "policy_version",
+    "constraints",
+    "allowed_scopes",
+    "blocked_scopes"
+  ],
+  "properties": {
+    "admission_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "require_review",
+        "redact"
+      ]
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "allowed_scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blocked_scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
+

@@ -1,0 +1,13 @@
+{
+  "name": "mova-agent-api-phase1",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Validation tooling for MOVA Agent API V0 Phase 1 schemas.",
+  "scripts": {
+    "validate:examples": "ajv validate --spec=draft2020 -c ajv-formats -s schemas/request_envelope.schema.json -r schemas/action.schema.json -d examples/agent_request_minimal.json --strict=false && ajv validate --spec=draft2020 -c ajv-formats -s schemas/evidence_response.schema.json -d examples/evidence_response_minimal.json --strict=false"
+  },
+  "devDependencies": {
+    "ajv-cli": "^5.0.0",
+    "ajv-formats": "^3.0.1"
+  }
+}

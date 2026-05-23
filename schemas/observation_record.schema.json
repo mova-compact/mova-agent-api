@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/observation_record.schema.json",
+  "title": "MOVA Agent API V0 Observation Record",
+  "description": "Observation entry emitted during a run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "step_id",
+    "event_type",
+    "timestamp",
+    "subject",
+    "result",
+    "metadata",
+    "evidence_ref"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "step_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "subject": {
+      "type": "object"
+    },
+    "result": {
+      "type": "object"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "evidence_ref": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/connector_call.schema.json",
+  "title": "MOVA Agent API V0 Connector Call",
+  "description": "Schema shape for a connector-call boundary record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "connector_id",
+    "call_id",
+    "request",
+    "auth_context",
+    "policy_result",
+    "status",
+    "response",
+    "timing"
+  ],
+  "properties": {
+    "connector_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "call_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request": {
+      "type": "object"
+    },
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "policy_result": {
+      "$ref": "./policy_admission.schema.json"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "allowed",
+        "blocked",
+        "failed",
+        "completed"
+      ]
+    },
+    "response": {
+      "type": "object"
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at"
+      ],
+      "properties": {
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+

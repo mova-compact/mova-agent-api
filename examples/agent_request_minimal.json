@@ -1,0 +1,41 @@
+{
+  "request_id": "req_01",
+  "actor": {
+    "actor_type": "ai_agent",
+    "actor_id": "agent_001"
+  },
+  "source": {
+    "channel": "api",
+    "client_id": "client_001"
+  },
+  "action": {
+    "action_id": "act_01",
+    "action_type": "validate_document",
+    "target_kind": "document",
+    "input_payload": {
+      "document_id": "doc_123"
+    },
+    "policy_context": {
+      "policy_profile_ref": "policy.default.v0"
+    },
+    "connector_context": {
+      "connector_set": [
+        "connector.docs.v1"
+      ]
+    },
+    "trace_ref": "trace:req_01"
+  },
+  "inputs": {
+    "document_id": "doc_123"
+  },
+  "context": {
+    "tenant_id": "tenant_001"
+  },
+  "correlation": {
+    "trace_id": "trace_abc123"
+  },
+  "timestamps": {
+    "requested_at": "2026-05-23T08:30:00Z"
+  }
+}
+

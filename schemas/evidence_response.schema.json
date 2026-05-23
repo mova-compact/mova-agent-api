@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/evidence_response.schema.json",
+  "title": "MOVA Agent API V0 Evidence Response",
+  "description": "Final evidence-oriented response for a run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "status",
+    "result",
+    "evidence",
+    "trace_ref",
+    "observation_refs",
+    "policy_summary"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "in_progress",
+        "completed",
+        "failed",
+        "blocked"
+      ]
+    },
+    "result": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "trace_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observation_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "policy_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "decision",
+        "policy_version",
+        "reason_code"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny",
+            "require_review",
+            "redact"
+          ]
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
+

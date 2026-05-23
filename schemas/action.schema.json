@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/action.schema.json",
+  "title": "MOVA Agent API V0 Action",
+  "description": "Product-local action model for controlled agent work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action_id",
+    "action_type",
+    "target_kind",
+    "policy_context",
+    "connector_context",
+    "trace_ref"
+  ],
+  "properties": {
+    "action_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_payload": {
+      "type": "object"
+    },
+    "policy_context": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "connector_context": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "trace_ref": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "input_ref"
+      ]
+    },
+    {
+      "required": [
+        "input_payload"
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,20 @@
+{
+  "run_id": "run_01",
+  "status": "completed",
+  "result": {
+    "outcome": "ok"
+  },
+  "evidence": {
+    "receipt_id": "ev_01"
+  },
+  "trace_ref": "trace:req_01",
+  "observation_refs": [
+    "obs_01"
+  ],
+  "policy_summary": {
+    "decision": "allow",
+    "policy_version": "policy.default.v0",
+    "reason_code": "ok"
+  }
+}
+
