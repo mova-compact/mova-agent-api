@@ -1,0 +1,11 @@
+{
+  "admission_id": "adm_01",
+  "action_id": "act_01",
+  "decision": "allow",
+  "reason_code": "ok",
+  "policy_version": "policy.default.v0",
+  "constraints": {},
+  "allowed_scopes": [],
+  "blocked_scopes": []
+}
+
