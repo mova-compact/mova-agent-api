@@ -2,11 +2,11 @@
 
 ## Deployment status
 
-- Verdict: `PASS` (deployment complete with KV persistence, controlled Webhook.site connector, and operational hardening endpoints)
+- Verdict: `PASS` (deployment complete with KV persistence, controlled Webhook.site connector, operational hardening endpoints, and universal HTTP connector boundary)
 - Target worker name: `mova-agent-api-v0`
 - workers.dev subdomain chosen: `s-myasoedov81.workers.dev` (account-level existing subdomain)
 - Deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
-- Deployed commit target: `59314b5` + Webhook.site connector provider promotion changes
+- Deployed commit target: `6b4099f` (`feat: add universal HTTP connector boundary`)
 
 ## What was prepared
 
@@ -28,6 +28,10 @@
   - `a276a02220fd43ff938eb4ff6b82e0a7`
 - Added Worker runtime var for external connector allowlist:
   - `MOVA_WEBHOOK_SITE_ALLOWED_URL=https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
+- Added Worker runtime endpoint registry vars for universal connector:
+  - `MOVA_HTTP_ENDPOINT_REF=webhook_site_test`
+  - `MOVA_HTTP_ENDPOINT_URL=https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
+  - `MOVA_HTTP_ENDPOINT_ALLOWED_METHODS=POST`
 
 Core business modules and V0 boundaries were not rewritten.
 
@@ -73,6 +77,12 @@ Core business modules and V0 boundaries were not rewritten.
   - publish succeeded.
   - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
   - active version: `e586bd32-d9e8-4cba-a1c7-41505584db7a`
+- `npx wrangler deploy` (universal connector promotion)
+  - custom build succeeded.
+  - worker upload succeeded.
+  - publish succeeded.
+  - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
+  - active version: `8b92ce40-40f6-4672-8484-1d9eb230abb5`
 
 ## Blocking error summary
 
@@ -146,6 +156,31 @@ Webhook.site provider smoke:
     - `run_id=run_req_webhook_1779546805`
     - `correlation_id=corr:req_webhook_1779546805`
 
+Universal HTTP connector smoke:
+
+- Endpoint allowlist runtime config:
+  - `endpoint_ref=webhook_site_test`
+  - resolved URL: `https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
+  - allowed methods: `POST`
+- Smoke command:
+  - `./scripts/smoke_public_api.ps1 -BaseUrl "https://mova-agent-api-v0.s-myasoedov81.workers.dev" -WebhookUrl "https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95" -EndpointRef "webhook_site_test" -IdempotencyKey "universal-http-smoke-002"`
+- API run result:
+  - `run_id=run_idem_universal-http-smoke-002`
+  - `status=completed`
+- Cross-request retrieval:
+  - `GET /runs/run_idem_universal-http-smoke-002` -> success
+  - `GET /runs/run_idem_universal-http-smoke-002/evidence` -> success
+- Evidence connector summary includes:
+  - `connector_mode=http_generic`
+  - `provider=http.generic.v1`
+  - `endpoint_ref=webhook_site_test`
+  - `method=POST`
+  - `http_status=200`
+  - `side_effect_performed=true`
+  - `resolved_url=https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95`
+- External receipt confirmation:
+  - webhook response preview returned from Webhook.site (`http_status=200`) with matching run trace/correlation context in evidence.
+
 Operational hardening smoke:
 
 - `GET /health` -> `status=ok`
@@ -180,6 +215,7 @@ Secret-safety and side-effect checks:
 ## What remains non-production
 
 - External connector execution is promoted only for one allowlisted Webhook.site endpoint
+- Universal connector is promoted only for runtime-allowlisted `endpoint_ref`; arbitrary URLs remain forbidden
 - No production auth provider integration
 - Cloudflare KV promoted only as Worker run/evidence persistence adapter
 - No D1/R2 promotion
