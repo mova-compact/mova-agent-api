@@ -8,6 +8,7 @@
   "required": [
     "connector_id",
     "call_id",
+    "side_effect_intent",
     "request",
     "auth_context",
     "policy_result",
@@ -23,6 +24,15 @@
     "call_id": {
       "type": "string",
       "minLength": 1
+    },
+    "side_effect_intent": {
+      "type": "string",
+      "enum": [
+        "none",
+        "local_only",
+        "external_network",
+        "destructive"
+      ]
     },
     "request": {
       "type": "object"
@@ -70,4 +80,3 @@
     }
   }
 }
-

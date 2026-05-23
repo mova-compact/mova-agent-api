@@ -1,6 +1,7 @@
 {
   "connector_id": "connector.docs.v1",
   "call_id": "call_01",
+  "side_effect_intent": "none",
   "request": {},
   "auth_context": {},
   "policy_result": {

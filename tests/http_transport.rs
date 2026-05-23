@@ -1,6 +1,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use mova_agent_api::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
+use mova_agent_api::connectors::{ConnectorExecutionError, ConnectorExecutor, FailingConnectorExecutor};
 use mova_agent_api::http::{router, router_with_state, AppState};
 use mova_agent_api::storage::{create_run_store, FailingRunStore, RunStore, StorageConfig, StorageError};
 use serde_json::Value;
@@ -18,8 +19,38 @@ fn minimal_request_body() -> String {
             "target_kind": "document",
             "input_payload": {"document_id": "doc_123"},
             "policy_context": {"policy_profile_ref": "policy.default.v0"},
-            "connector_context": {"connector_set": ["connector.docs.v1"]},
+            "connector_context": {
+              "connector_set": ["connector.docs.v1"],
+              "connector_id": "connector.docs.v1",
+              "side_effect_intent": "none"
+            },
             "trace_ref": "trace:req_http_01"
+        },
+        "inputs": {"document_id": "doc_123"},
+        "context": {"tenant_id": "tenant_001"},
+        "correlation": {"trace_id": "trace_abc123"},
+        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
+    })
+    .to_string()
+}
+
+fn connector_external_network_request_body() -> String {
+    serde_json::json!({
+        "request_id": "req_http_network_01",
+        "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
+        "source": {"channel": "api", "client_id": "client_001"},
+        "action": {
+            "action_id": "act_network_01",
+            "action_type": "validate_document",
+            "target_kind": "document",
+            "input_payload": {"document_id": "doc_123"},
+            "policy_context": {"policy_profile_ref": "policy.default.v0"},
+            "connector_context": {
+              "connector_set": ["connector.docs.v1"],
+              "connector_id": "connector.docs.v1",
+              "side_effect_intent": "external_network"
+            },
+            "trace_ref": "trace:req_http_network_01"
         },
         "inputs": {"document_id": "doc_123"},
         "context": {"tenant_id": "tenant_001"},
@@ -257,6 +288,56 @@ async fn post_actions_run_rejects_unverified_production_auth() {
             .iter()
             .any(|d| d.as_str().unwrap().contains("auth_unverified"))
     );
+}
+
+#[tokio::test]
+async fn post_actions_run_denies_external_network_side_effect_intent() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(connector_external_network_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "connector_execution_failed");
+}
+
+#[tokio::test]
+async fn post_actions_run_returns_bad_gateway_on_connector_failure() {
+    let auth_verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&AuthTrustConfig::default_v0()));
+    let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&StorageConfig::in_memory_default()));
+    let failing_connector: Arc<dyn ConnectorExecutor> = Arc::new(FailingConnectorExecutor::new(
+        ConnectorExecutionError::new("connector_runtime_failed", "simulated connector failure"),
+    ));
+    let app = router_with_state(AppState::with_boundaries(
+        auth_verifier,
+        run_store,
+        failing_connector,
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "connector_execution_failed");
 }
 
 #[tokio::test]
@@ -545,6 +626,7 @@ async fn get_run_evidence_returns_evidence_for_created_run() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["run_id"], "run_req_http_01");
     assert_eq!(json["trace_ref"], "trace:req_http_01");
+    assert_eq!(json["result"]["connector_status"], "completed");
 }
 
 #[tokio::test]

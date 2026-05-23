@@ -53,12 +53,22 @@ pub fn build_evidence_response(
         .iter()
         .map(|record| record.evidence_ref.clone())
         .collect::<Vec<_>>();
+    let connector_result = observations
+        .iter()
+        .find(|record| record.event_type == "observation.write")
+        .and_then(|record| record.result.get("connector_response").cloned())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let connector_status = observations
+        .iter()
+        .find(|record| record.event_type == "observation.write")
+        .and_then(|record| record.result.get("connector_status").cloned())
+        .unwrap_or_else(|| serde_json::json!("unknown"));
 
     EvidenceResponse {
         run_id,
         status,
-        result: serde_json::json!({"outcome": "skeleton"}),
-        evidence: serde_json::json!({"record_count": observations.len()}),
+        result: serde_json::json!({"outcome": "skeleton", "connector_status": connector_status}),
+        evidence: serde_json::json!({"record_count": observations.len(), "connector_result": connector_result}),
         trace_ref,
         observation_refs,
         policy_summary,

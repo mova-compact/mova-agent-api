@@ -1,0 +1,11 @@
+{
+  "adapter_kind": "deterministic_local",
+  "allowed_connectors": [
+    "connector.docs.v1"
+  ],
+  "allowed_side_effect_intents": [
+    "none",
+    "local_only"
+  ],
+  "offline_stub_rules": []
+}

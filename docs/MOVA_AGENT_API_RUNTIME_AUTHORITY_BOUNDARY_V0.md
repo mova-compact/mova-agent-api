@@ -29,9 +29,11 @@ Status: active V0 boundary freeze
 
 ## 4. Connector side-effect guard
 
-- Current connector behavior is deterministic and side-effect-free.
-- Real external connector calls are forbidden in current V0.
-- Connector adapters must keep side-effect intent explicit and testable.
+- Connector execution is adapter-owned and guarded by side-effect intent.
+- Allowed V0 intents are deterministic and local-safe (`none`, `local_only`) by default.
+- Real external connector calls remain forbidden in current V0.
+- Disallowed intents (`external_network`, `destructive`) fail deterministically.
+- Connector adapters keep side-effect intent explicit and testable.
 
 ## 5. Stop conditions for future development
 

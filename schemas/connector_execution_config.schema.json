@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/connector_execution_config.schema.json",
+  "title": "MOVA Agent API V0 Connector Execution Config",
+  "description": "Provider-agnostic config for connector execution adapter selection and guard rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "adapter_kind",
+    "allowed_connectors",
+    "allowed_side_effect_intents",
+    "offline_stub_rules"
+  ],
+  "properties": {
+    "adapter_kind": {
+      "type": "string",
+      "enum": [
+        "deterministic_local",
+        "offline_stub"
+      ]
+    },
+    "allowed_connectors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowed_side_effect_intents": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "local_only",
+          "external_network",
+          "destructive"
+        ]
+      }
+    },
+    "offline_stub_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_id",
+          "call_status",
+          "guard_reason"
+        ],
+        "properties": {
+          "connector_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "call_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "allowed",
+              "blocked",
+              "failed",
+              "completed"
+            ]
+          },
+          "guard_reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

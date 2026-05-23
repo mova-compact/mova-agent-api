@@ -2,7 +2,10 @@
 //!
 //! This module is transport-only and delegates to existing module boundaries.
 
-use crate::connectors::build_connector_call;
+use crate::connectors::{
+    create_connector_executor, ConnectorExecutionConfig, ConnectorExecutionError, ConnectorExecutionRequest,
+    ConnectorExecutor, SideEffectIntent,
+};
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
@@ -36,6 +39,7 @@ pub struct AuthPlaceholder {
 pub struct AppState {
     run_store: Arc<dyn RunStore>,
     auth_verifier: Arc<dyn AuthVerifier>,
+    connector_executor: Arc<dyn ConnectorExecutor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,25 +102,49 @@ impl AppState {
         let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&config));
         let storage = StorageConfig::in_memory_default();
         let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&storage));
+        let connector_config = ConnectorExecutionConfig::deterministic_local_default();
+        let connector_executor: Arc<dyn ConnectorExecutor> =
+            Arc::from(create_connector_executor(&connector_config));
         Self {
             run_store,
             auth_verifier: verifier,
+            connector_executor,
         }
     }
 
     pub fn with_auth_verifier(auth_verifier: Arc<dyn AuthVerifier>) -> Self {
         let storage = StorageConfig::in_memory_default();
         let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&storage));
+        let connector_config = ConnectorExecutionConfig::deterministic_local_default();
+        let connector_executor: Arc<dyn ConnectorExecutor> =
+            Arc::from(create_connector_executor(&connector_config));
         Self {
             run_store,
             auth_verifier,
+            connector_executor,
         }
     }
 
     pub fn with_auth_and_store(auth_verifier: Arc<dyn AuthVerifier>, run_store: Arc<dyn RunStore>) -> Self {
+        let connector_config = ConnectorExecutionConfig::deterministic_local_default();
+        let connector_executor: Arc<dyn ConnectorExecutor> =
+            Arc::from(create_connector_executor(&connector_config));
         Self {
             run_store,
             auth_verifier,
+            connector_executor,
+        }
+    }
+
+    pub fn with_boundaries(
+        auth_verifier: Arc<dyn AuthVerifier>,
+        run_store: Arc<dyn RunStore>,
+        connector_executor: Arc<dyn ConnectorExecutor>,
+    ) -> Self {
+        Self {
+            run_store,
+            auth_verifier,
+            connector_executor,
         }
     }
 
@@ -224,6 +252,27 @@ fn storage_unavailable(err: &StorageError) -> (StatusCode, Json<ErrorResponse>) 
     )
 }
 
+fn connector_unavailable(err: &ConnectorExecutionError) -> (StatusCode, Json<ErrorResponse>) {
+    let status = if err.code == "connector_side_effect_denied" || err.code == "connector_denied" {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    (
+        status,
+        Json(ErrorResponse {
+            error: ApiError {
+                code: "connector_execution_failed".to_string(),
+                message: "connector execution failed".to_string(),
+                details: vec![
+                    format!("connector_code: {}", err.code),
+                    format!("connector_message: {}", err.message),
+                ],
+            },
+        }),
+    )
+}
+
 fn render_validation_error(error: &RequestValidationError) -> String {
     format!("{}: {}", error.field, error.message)
 }
@@ -278,12 +327,27 @@ async fn post_actions_run(
     }
 
     let _plan = FlatExecutionPlan::from_action(run_id.clone(), envelope.action.action_id.clone());
-    let connector_call = build_connector_call(
-        "connector.docs.v1".to_string(),
-        format!("call_{}", envelope.request_id),
-        admission.to_summary(),
-        "2026-05-23T10:30:00Z".to_string(),
-    );
+    let connector_id = envelope
+        .action
+        .connector_context
+        .get("connector_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("connector.docs.v1")
+        .to_string();
+    let side_effect_intent = parse_side_effect_intent(&envelope.action.connector_context)
+        .unwrap_or(SideEffectIntent::None);
+    let connector_call = match state.connector_executor.execute(ConnectorExecutionRequest {
+        connector_id,
+        call_id: format!("call_{}", envelope.request_id),
+        side_effect_intent,
+        request: envelope.action.input_payload.clone().unwrap_or_else(|| json!({})),
+        auth_context: serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({})),
+        policy_result: admission.to_summary(),
+        started_at: "2026-05-23T10:30:00Z".to_string(),
+    }) {
+        Ok(result) => result.call,
+        Err(err) => return connector_unavailable(&err).into_response(),
+    };
 
     let mut journal = ObservationJournal::new();
     journal.append(ObservationRecord {
@@ -291,9 +355,18 @@ async fn post_actions_run(
         step_id: "step_observation_write".to_string(),
         event_type: "observation.write".to_string(),
         timestamp: "2026-05-23T10:30:01Z".to_string(),
-        subject: json!({"call_id": connector_call.call_id}),
-        result: json!({"status": "ok"}),
-        metadata: json!({}),
+        subject: json!({
+            "call_id": connector_call.call_id,
+            "connector_id": connector_call.connector_id
+        }),
+        result: json!({
+            "status": "ok",
+            "connector_status": connector_call.status,
+            "connector_response": connector_call.response
+        }),
+        metadata: json!({
+            "side_effect_intent": connector_call.side_effect_intent
+        }),
         evidence_ref: format!("ev_{}", envelope.request_id),
     });
 
@@ -326,6 +399,17 @@ async fn post_actions_run(
         }),
     )
         .into_response()
+}
+
+fn parse_side_effect_intent(connector_context: &Value) -> Option<SideEffectIntent> {
+    let value = connector_context.get("side_effect_intent")?.as_str()?;
+    match value {
+        "none" => Some(SideEffectIntent::None),
+        "local_only" => Some(SideEffectIntent::LocalOnly),
+        "external_network" => Some(SideEffectIntent::ExternalNetwork),
+        "destructive" => Some(SideEffectIntent::Destructive),
+        _ => None,
+    }
 }
 
 fn with_auth_from_headers(mut payload: Value, headers: &HeaderMap) -> Value {

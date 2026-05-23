@@ -1,4 +1,6 @@
-use mova_agent_api::connectors::build_connector_call;
+use mova_agent_api::connectors::{
+    create_connector_executor, ConnectorExecutionConfig, ConnectorExecutionRequest, SideEffectIntent,
+};
 use mova_agent_api::evidence::{build_evidence_response, RunStatus};
 use mova_agent_api::execution::FlatExecutionPlan;
 use mova_agent_api::observation::{ObservationJournal, ObservationRecord};
@@ -39,12 +41,20 @@ fn vertical_smoke_single_action_path() {
     let plan = FlatExecutionPlan::from_action("run_01".to_string(), envelope.action.action_id.clone());
     assert_eq!(plan.steps.len(), 4);
 
-    let connector_call = build_connector_call(
-        "connector.docs.v1".to_string(),
-        "call_01".to_string(),
-        admission.to_summary(),
-        "2026-05-23T09:30:00Z".to_string(),
-    );
+    let connector_executor =
+        create_connector_executor(&ConnectorExecutionConfig::deterministic_local_default());
+    let connector_call = connector_executor
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.docs.v1".to_string(),
+            call_id: "call_01".to_string(),
+            side_effect_intent: SideEffectIntent::None,
+            request: serde_json::json!({"document_id":"doc_123"}),
+            auth_context: serde_json::json!({}),
+            policy_result: admission.to_summary(),
+            started_at: "2026-05-23T09:30:00Z".to_string(),
+        })
+        .unwrap()
+        .call;
     assert_eq!(connector_call.connector_id, "connector.docs.v1");
 
     let mut journal = ObservationJournal::new();
@@ -71,4 +81,3 @@ fn vertical_smoke_single_action_path() {
     assert_eq!(evidence.trace_ref, "trace:req_01");
     assert_eq!(evidence.observation_refs, vec!["ev_01"]);
 }
-
