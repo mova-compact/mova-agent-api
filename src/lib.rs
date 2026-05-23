@@ -5,7 +5,7 @@
 pub mod connectors;
 pub mod evidence;
 pub mod execution;
+pub mod http;
 pub mod observation;
 pub mod policy;
 pub mod request;
-
