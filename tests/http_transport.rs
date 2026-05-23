@@ -1,7 +1,9 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
-use mova_agent_api::http::router;
+use mova_agent_api::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
+use mova_agent_api::http::{router, router_with_state, AppState};
 use serde_json::Value;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 fn minimal_request_body() -> String {
@@ -266,7 +268,7 @@ async fn post_actions_run_rejects_production_auth_without_required_scope() {
                 .uri("/actions/run")
                 .header("content-type", "application/json")
                 .header("x-mova-auth-mode", "production")
-                .header("x-mova-token-ref", "token://mova-trusted/agent_001")
+                .header("x-mova-token-ref", "token://mova-trusted/agent_001?aud=mova-agent-api")
                 .header("x-mova-scopes", "actions.validate")
                 .body(Body::from(minimal_request_body()))
                 .unwrap(),
@@ -298,7 +300,7 @@ async fn post_actions_run_allows_verified_production_auth() {
                 .uri("/actions/run")
                 .header("content-type", "application/json")
                 .header("x-mova-auth-mode", "production")
-                .header("x-mova-token-ref", "token://mova-trusted/agent_001")
+                .header("x-mova-token-ref", "token://mova-trusted/agent_001?aud=mova-agent-api")
                 .header("x-mova-scopes", "actions.run")
                 .body(Body::from(minimal_request_body()))
                 .unwrap(),
@@ -322,6 +324,44 @@ async fn post_actions_run_allows_verified_production_auth() {
     let evidence_body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
     let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
     assert_eq!(evidence_json["policy_summary"]["reason_code"], "authorized");
+}
+
+#[tokio::test]
+async fn post_actions_run_uses_explicit_invalid_verifier_config_path() {
+    let invalid_config = AuthTrustConfig {
+        verifier_kind: "unsupported".to_string(),
+        trusted_issuers: vec!["mova-trusted".to_string()],
+        trusted_audiences: vec!["mova-agent-api".to_string()],
+        allowed_scopes: vec!["actions.run".to_string()],
+    };
+    let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&invalid_config));
+    let app = router_with_state(AppState::with_auth_verifier(verifier));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .header("x-mova-auth-mode", "production")
+                .header("x-mova-token-ref", "token://mova-trusted/agent_001?aud=mova-agent-api")
+                .header("x-mova-scopes", "actions.run")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "authorization_failed");
+    assert!(
+        json["error"]["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d.as_str().unwrap().contains("auth_unverified"))
+    );
 }
 
 #[tokio::test]

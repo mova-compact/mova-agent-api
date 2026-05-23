@@ -8,7 +8,7 @@ use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
-use crate::auth::{AuthVerifier, DeterministicAuthVerifier};
+use crate::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -99,9 +99,18 @@ pub fn router_with_state(state: AppState) -> Router {
 
 impl AppState {
     pub fn new() -> Self {
+        let config = AuthTrustConfig::default_v0();
+        let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&config));
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
-            auth_verifier: Arc::new(DeterministicAuthVerifier::default_v0()),
+            auth_verifier: verifier,
+        }
+    }
+
+    pub fn with_auth_verifier(auth_verifier: Arc<dyn AuthVerifier>) -> Self {
+        Self {
+            runs: Arc::new(Mutex::new(HashMap::new())),
+            auth_verifier,
         }
     }
 

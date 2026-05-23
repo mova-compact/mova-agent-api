@@ -283,7 +283,7 @@ mod tests {
             Some(AuthContext {
                 mode: "production".to_string(),
                 actor_id: Some("agent_001".to_string()),
-                token_ref: Some("token://mova-trusted/agent_001".to_string()),
+                token_ref: Some("token://mova-trusted/agent_001?aud=mova-agent-api".to_string()),
                 scopes: vec!["actions.validate".to_string()],
                 source: Some("header".to_string()),
                 verified: false,
@@ -305,7 +305,7 @@ mod tests {
             Some(AuthContext {
                 mode: "production".to_string(),
                 actor_id: Some("agent_001".to_string()),
-                token_ref: Some("token://mova-trusted/agent_001".to_string()),
+                token_ref: Some("token://mova-trusted/agent_001?aud=mova-agent-api".to_string()),
                 scopes: vec!["actions.run".to_string()],
                 source: Some("header".to_string()),
                 verified: false,
