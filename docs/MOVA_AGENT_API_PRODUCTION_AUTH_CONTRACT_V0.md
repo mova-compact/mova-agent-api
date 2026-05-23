@@ -17,7 +17,7 @@ Define deterministic production-auth contract semantics for MOVA Agent API while
 
 - Production mode is signaled by `auth_context.mode = "production"` (or corresponding header metadata).
 - Deterministic token reference contract:
-  - `token_ref = "token://<issuer>/<subject>"`
+  - `token_ref = "token://<issuer>/<subject>?aud=<audience>"`
 - Trusted issuer semantics:
   - verifier accepts only configured trusted issuers.
 - Verification output is structured:

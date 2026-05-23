@@ -59,7 +59,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>`.
+          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
         - name: x-mova-scopes
           in: header
           required: false
@@ -123,7 +123,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>`.
+          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
         - name: x-mova-scopes
           in: header
           required: false
