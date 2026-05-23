@@ -1,7 +1,7 @@
 //! Runtime configuration boundary for MOVA Agent API V0.
 
 use crate::auth::AuthTrustConfig;
-use crate::connectors::ConnectorExecutionConfig;
+use crate::connectors::{ConnectorExecutionConfig, EndpointRegistryEntry, SideEffectIntent};
 use crate::secrets::{SecretBoundaryError, SecretRef, SecretRefKind};
 use crate::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
@@ -130,6 +130,26 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
         if let Ok(value) = std::env::var("MOVA_WEBHOOK_SITE_ALLOWED_URL") {
             cfg.connectors.allowed_webhook_urls = vec![value];
         }
+        if let Ok(value) = std::env::var("MOVA_HTTP_ENDPOINT_REF") {
+            let url = std::env::var("MOVA_HTTP_ENDPOINT_URL").unwrap_or_default();
+            let methods = std::env::var("MOVA_HTTP_ENDPOINT_ALLOWED_METHODS")
+                .ok()
+                .map(|v| {
+                    v.split(',')
+                        .map(|m| m.trim().to_ascii_uppercase())
+                        .filter(|m| !m.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["POST".to_string()]);
+            if !url.is_empty() {
+                cfg.connectors.endpoint_registry = vec![EndpointRegistryEntry {
+                    endpoint_ref: value,
+                    url,
+                    allowed_methods: methods,
+                    allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                }];
+            }
+        }
         if cfg.connectors.adapter_kind == "webhook_site" {
             if cfg.connectors.allowed_connectors.is_empty() {
                 cfg.connectors.allowed_connectors = vec!["connector.webhook_site.v1".to_string()];
@@ -143,6 +163,21 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
                 cfg.connectors
                     .allowed_side_effect_intents
                     .push(crate::connectors::SideEffectIntent::ExternalNetwork);
+            }
+        }
+        if cfg.connectors.adapter_kind == "http_generic" {
+            if cfg.connectors.allowed_connectors.is_empty() {
+                cfg.connectors.allowed_connectors = vec!["connector.http.generic.v1".to_string()];
+            }
+            if cfg
+                .connectors
+                .allowed_side_effect_intents
+                .iter()
+                .all(|i| *i != SideEffectIntent::ExternalNetwork)
+            {
+                cfg.connectors
+                    .allowed_side_effect_intents
+                    .push(SideEffectIntent::ExternalNetwork);
             }
         }
 

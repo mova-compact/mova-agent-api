@@ -1,13 +1,15 @@
 use mova_agent_api::connectors::{
     create_connector_executor, ConnectorCallStatus, ConnectorExecutionConfig, ConnectorExecutionError,
-    ConnectorExecutionRequest, ConnectorExecutor, OfflineStubRule, SideEffectIntent, WebhookHttpClient, WebhookHttpResult,
-    WebhookSiteConnectorExecutor,
+    ConnectorExecutionRequest, ConnectorExecutor, EndpointRegistryEntry, GenericHttpClient,
+    GenericHttpConnectorExecutor, GenericHttpRequest, OfflineStubRule, SideEffectIntent, WebhookHttpClient,
+    WebhookHttpResult, WebhookSiteConnectorExecutor,
 };
 use mova_agent_api::policy::{AdmissionDecision, PolicySummary};
 use mova_agent_api::secrets::{SecretRef, SecretRefKind};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 fn request(connector_id: &str, intent: SideEffectIntent) -> ConnectorExecutionRequest {
     ConnectorExecutionRequest {
@@ -72,6 +74,7 @@ async fn offline_stub_returns_rule_driven_result() {
         allowed_connectors: vec![],
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
+        endpoint_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![OfflineStubRule {
@@ -95,6 +98,7 @@ async fn invalid_config_maps_to_deterministic_failure() {
         allowed_connectors: vec![],
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
+        endpoint_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![],
@@ -132,6 +136,7 @@ async fn webhook_site_allows_only_allowlisted_target() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        endpoint_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -181,6 +186,7 @@ async fn webhook_site_denies_non_allowlisted_target() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        endpoint_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -226,6 +232,7 @@ async fn webhook_site_maps_provider_http_failure() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        endpoint_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -261,4 +268,241 @@ async fn webhook_site_maps_provider_http_failure() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "connector_provider_http_failed");
+}
+
+#[derive(Clone)]
+struct MockGenericHttpClient {
+    result: Result<WebhookHttpResult, ConnectorExecutionError>,
+}
+
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl GenericHttpClient for MockGenericHttpClient {
+    async fn execute(
+        &self,
+        _request: GenericHttpRequest,
+    ) -> Result<WebhookHttpResult, ConnectorExecutionError> {
+        self.result.clone()
+    }
+}
+
+#[derive(Clone)]
+struct RetryThenSuccessHttpClient {
+    calls: Arc<Mutex<u8>>,
+}
+
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl GenericHttpClient for RetryThenSuccessHttpClient {
+    async fn execute(
+        &self,
+        _request: GenericHttpRequest,
+    ) -> Result<WebhookHttpResult, ConnectorExecutionError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            Err(ConnectorExecutionError::new(
+                "connector_provider_timeout",
+                "timeout",
+            ))
+        } else {
+            Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            })
+        }
+    }
+}
+
+fn generic_cfg() -> ConnectorExecutionConfig {
+    ConnectorExecutionConfig {
+        adapter_kind: "http_generic".to_string(),
+        allowed_connectors: vec!["connector.http.generic.v1".to_string()],
+        allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        offline_stub_rules: vec![],
+        allowed_webhook_urls: vec![],
+        endpoint_registry: vec![EndpointRegistryEntry {
+            endpoint_ref: "webhook_site_test".to_string(),
+            url: "https://webhook.site/allowed-token".to_string(),
+            allowed_methods: vec!["POST".to_string()],
+            allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        }],
+        timeout_ms: 10_000,
+        max_retries: 0,
+    }
+}
+
+#[tokio::test]
+async fn generic_http_allows_allowlisted_endpoint_ref() {
+    let exec = GenericHttpConnectorExecutor::new(
+        generic_cfg(),
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_01".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST",
+                "headers": {"x-correlation-id":"corr_01"},
+                "body": {"hello":"world"}
+            }),
+            auth_context: json!({}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.call.status, ConnectorCallStatus::Completed);
+    assert_eq!(result.call.response["provider"], "http.generic.v1");
+}
+
+#[tokio::test]
+async fn generic_http_denies_unknown_endpoint_ref() {
+    let exec = GenericHttpConnectorExecutor::new(
+        generic_cfg(),
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_02".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "unknown",
+                "method": "POST"
+            }),
+            auth_context: json!({}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_endpoint_denied");
+}
+
+#[tokio::test]
+async fn generic_http_denies_disallowed_method() {
+    let exec = GenericHttpConnectorExecutor::new(
+        generic_cfg(),
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_03".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "GET"
+            }),
+            auth_context: json!({}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_method_denied");
+}
+
+#[tokio::test]
+async fn generic_http_maps_timeout_without_retry() {
+    let exec = GenericHttpConnectorExecutor::new(
+        generic_cfg(),
+        Arc::new(MockGenericHttpClient {
+            result: Err(ConnectorExecutionError::new(
+                "connector_provider_timeout",
+                "timeout",
+            )),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_04".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_provider_timeout");
+}
+
+#[tokio::test]
+async fn generic_http_retries_timeout_then_succeeds() {
+    let mut cfg = generic_cfg();
+    cfg.max_retries = 1;
+    let calls = Arc::new(Mutex::new(0));
+    let exec = GenericHttpConnectorExecutor::new(
+        cfg,
+        Arc::new(RetryThenSuccessHttpClient {
+            calls: Arc::clone(&calls),
+        }),
+    );
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_05".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.call.response["attempts"], 2);
+    assert_eq!(*calls.lock().unwrap(), 2);
 }

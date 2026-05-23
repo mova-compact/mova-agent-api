@@ -418,12 +418,34 @@ async fn post_actions_run(
         }
     }
     let connector_request = envelope.action.input_payload.clone().unwrap_or_else(|| json!({}));
+    let endpoint_ref = envelope
+        .action
+        .connector_context
+        .get("endpoint_ref")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let method = envelope
+        .action
+        .connector_context
+        .get("method")
+        .cloned()
+        .unwrap_or(json!("POST"));
+    let headers = envelope
+        .action
+        .connector_context
+        .get("headers")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let connector_call = match state.connector_executor.execute(ConnectorExecutionRequest {
         connector_id,
         call_id: format!("call_{}", envelope.request_id),
         side_effect_intent,
         request: redact_json(&json!({
             "target_url": connector_request.get("target_url").cloned().unwrap_or(Value::Null),
+            "endpoint_ref": endpoint_ref,
+            "method": method,
+            "headers": headers,
+            "body": connector_request,
             "run_id": run_id.clone(),
             "correlation_id": envelope
                 .correlation

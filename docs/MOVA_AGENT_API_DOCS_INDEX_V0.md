@@ -21,6 +21,7 @@
 - `docs/MOVA_AGENT_API_CLOUDFLARE_DEPLOYMENT_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_CLOUDFLARE_PERSISTENCE_PROVIDER_V0.md`
 - `docs/MOVA_AGENT_API_WEBHOOK_SITE_CONNECTOR_PROVIDER_V0.md`
+- `docs/MOVA_AGENT_API_UNIVERSAL_HTTP_CONNECTOR_V0.md`
 
 These are implementation/proof records, not lightweight user troubleshooting guides.
 

@@ -6,7 +6,8 @@
 use crate::auth::{create_auth_verifier, AuthVerifier};
 use crate::connectors::{
     ConnectorExecutionConfig, ConnectorExecutionError, ConnectorExecutionRequest, ConnectorExecutionResult, ConnectorExecutor,
-    DisabledWebhookHttpClient, SideEffectIntent, WebhookHttpClient, WebhookHttpResult, WebhookSiteConnectorExecutor,
+    DisabledWebhookHttpClient, EndpointRegistryEntry, GenericHttpClient, GenericHttpConnectorExecutor, GenericHttpRequest,
+    SideEffectIntent, WebhookHttpClient, WebhookHttpResult, WebhookSiteConnectorExecutor,
 };
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
@@ -89,6 +90,58 @@ impl WebhookHttpClient for WorkerWebhookHttpClient {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl GenericHttpClient for WorkerWebhookHttpClient {
+    async fn execute(
+        &self,
+        request: GenericHttpRequest,
+    ) -> std::result::Result<WebhookHttpResult, ConnectorExecutionError> {
+        let init = web_sys::RequestInit::new();
+        init.set_method(&request.method);
+        let headers = web_sys::Headers::new().map_err(|_| {
+            ConnectorExecutionError::new("connector_request_invalid", "failed to create headers")
+        })?;
+        for (k, v) in request.headers {
+            headers.set(&k, &v).map_err(|_| {
+                ConnectorExecutionError::new("connector_request_invalid", "invalid request header")
+            })?;
+        }
+        if request.method == "POST" {
+            let payload = serde_json::to_string(&request.body.unwrap_or_else(|| json!({}))).map_err(|_| {
+                ConnectorExecutionError::new("connector_request_invalid", "failed to serialize HTTP payload")
+            })?;
+            init.set_body(&JsValue::from_str(&payload));
+            headers.set("content-type", "application/json").map_err(|_| {
+                ConnectorExecutionError::new("connector_request_invalid", "failed to set content-type")
+            })?;
+        }
+        init.set_headers(&headers);
+
+        let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+        let promise = global.fetch_with_str_and_init(&request.url, &init);
+        let response_js = JsFuture::from(promise).await.map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "http_generic fetch failed")
+        })?;
+        let response: web_sys::Response = response_js.dyn_into().map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "http_generic response cast failed")
+        })?;
+        let status = response.status();
+        let text_js = JsFuture::from(response.text().map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "http_generic response text failed")
+        })?)
+        .await
+        .map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "http_generic response text await failed")
+        })?;
+        let preview: String = text_js.as_string().unwrap_or_default().chars().take(256).collect();
+        Ok(WebhookHttpResult {
+            status,
+            body_preview: preview,
+        })
+    }
+}
+
 fn webhook_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
     let allowed_url = env.var("MOVA_WEBHOOK_SITE_ALLOWED_URL").ok()?.to_string();
     Some(ConnectorExecutionConfig {
@@ -97,6 +150,38 @@ fn webhook_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: Vec::new(),
         allowed_webhook_urls: vec![allowed_url],
+        endpoint_registry: Vec::new(),
+        timeout_ms: 10_000,
+        max_retries: 0,
+    })
+}
+
+fn http_generic_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
+    let endpoint_ref = env.var("MOVA_HTTP_ENDPOINT_REF").ok()?.to_string();
+    let endpoint_url = env.var("MOVA_HTTP_ENDPOINT_URL").ok()?.to_string();
+    let methods = env
+        .var("MOVA_HTTP_ENDPOINT_ALLOWED_METHODS")
+        .ok()
+        .map(|v| {
+            v.to_string()
+                .split(',')
+                .map(|s| s.trim().to_ascii_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec!["POST".to_string()]);
+    Some(ConnectorExecutionConfig {
+        adapter_kind: "http_generic".to_string(),
+        allowed_connectors: vec!["connector.http.generic.v1".to_string()],
+        allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        offline_stub_rules: Vec::new(),
+        allowed_webhook_urls: Vec::new(),
+        endpoint_registry: vec![EndpointRegistryEntry {
+            endpoint_ref,
+            url: endpoint_url,
+            allowed_methods: methods,
+            allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        }],
         timeout_ms: 10_000,
         max_retries: 0,
     })
@@ -124,7 +209,33 @@ fn state_from_env(env: &Env) -> WorkerState {
         })
         .unwrap_or_default();
 
-    let connector_executor: Arc<dyn ConnectorExecutor> = if let Some(cfg) = webhook_config_from_env(env) {
+    let connector_executor: Arc<dyn ConnectorExecutor> = if let Some(cfg) = http_generic_config_from_env(env) {
+        if cfg.validate().is_ok() {
+            Arc::new(GenericHttpConnectorExecutor::new(
+                cfg,
+                Arc::new(WorkerWebhookHttpClient),
+            ))
+        } else {
+            Arc::new(GenericHttpConnectorExecutor::new(
+                ConnectorExecutionConfig {
+                    adapter_kind: "http_generic".to_string(),
+                    allowed_connectors: vec!["connector.http.generic.v1".to_string()],
+                    allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                    offline_stub_rules: Vec::new(),
+                    allowed_webhook_urls: Vec::new(),
+                    endpoint_registry: vec![EndpointRegistryEntry {
+                        endpoint_ref: "invalid".to_string(),
+                        url: "https://webhook.site/invalid".to_string(),
+                        allowed_methods: vec!["POST".to_string()],
+                        allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                    }],
+                    timeout_ms: 10_000,
+                    max_retries: 0,
+                },
+                Arc::new(DisabledWebhookHttpClient),
+            ))
+        }
+    } else if let Some(cfg) = webhook_config_from_env(env) {
         if cfg.validate().is_ok() {
             Arc::new(WebhookSiteConnectorExecutor::new(
                 cfg,
@@ -138,6 +249,7 @@ fn state_from_env(env: &Env) -> WorkerState {
                     allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
                     offline_stub_rules: Vec::new(),
                     allowed_webhook_urls: vec!["https://webhook.site/invalid".to_string()],
+                    endpoint_registry: Vec::new(),
                     timeout_ms: 10_000,
                     max_retries: 0,
                 },
@@ -392,15 +504,32 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("connector.docs.v1")
                     .to_string();
-                let target_url = envelope
+                let target_url = envelope.action.connector_context.get("target_url").cloned().unwrap_or(Value::Null);
+                let endpoint_ref = envelope
                     .action
                     .connector_context
-                    .get("target_url")
+                    .get("endpoint_ref")
                     .cloned()
                     .unwrap_or(Value::Null);
+                let method = envelope
+                    .action
+                    .connector_context
+                    .get("method")
+                    .cloned()
+                    .unwrap_or(json!("POST"));
+                let headers = envelope
+                    .action
+                    .connector_context
+                    .get("headers")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
 
                 let connector_request = json!({
                     "target_url": target_url,
+                    "endpoint_ref": endpoint_ref,
+                    "method": method,
+                    "headers": headers,
+                    "body": envelope.action.input_payload.clone().unwrap_or_else(|| json!({})),
                     "run_id": run_id.clone(),
                     "correlation_id": envelope
                         .correlation

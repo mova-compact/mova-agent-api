@@ -9,6 +9,7 @@
   ],
   "offline_stub_rules": [],
   "allowed_webhook_urls": [],
+  "endpoint_registry": [],
   "timeout_ms": 10000,
   "max_retries": 0
 }

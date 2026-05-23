@@ -11,6 +11,7 @@
     "allowed_side_effect_intents",
     "offline_stub_rules",
     "allowed_webhook_urls",
+    "endpoint_registry",
     "timeout_ms",
     "max_retries"
   ],
@@ -20,7 +21,8 @@
       "enum": [
         "deterministic_local",
         "offline_stub",
-        "webhook_site"
+        "webhook_site",
+        "http_generic"
       ]
     },
     "allowed_connectors": {
@@ -79,6 +81,53 @@
       "items": {
         "type": "string",
         "format": "uri"
+      }
+    },
+    "endpoint_registry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "endpoint_ref",
+          "url",
+          "allowed_methods",
+          "allowed_side_effect_intents"
+        ],
+        "properties": {
+          "endpoint_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "allowed_methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "GET",
+                "POST"
+              ]
+            },
+            "minItems": 1
+          },
+          "allowed_side_effect_intents": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "none",
+                "local_only",
+                "external_network",
+                "destructive"
+              ]
+            },
+            "minItems": 1
+          }
+        }
       }
     },
     "timeout_ms": {

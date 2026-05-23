@@ -109,6 +109,43 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/RequestEnvelope"
+            examples:
+              universalHttpWebhook:
+                summary: Universal HTTP connector request using endpoint_ref allowlist
+                value:
+                  request_id: req_http_generic_01
+                  actor:
+                    actor_type: ai_agent
+                    actor_id: agent_001
+                  source:
+                    channel: api
+                    client_id: client_001
+                  action:
+                    action_id: act_http_generic_01
+                    action_type: webhook_notify
+                    target_kind: webhook
+                    input_payload:
+                      message: mova http generic smoke
+                    policy_context:
+                      policy_profile_ref: policy.default.v0
+                    connector_context:
+                      connector_set: [connector.http.generic.v1]
+                      connector_id: connector.http.generic.v1
+                      side_effect_intent: external_network
+                      endpoint_ref: webhook_site_test
+                      method: POST
+                      headers:
+                        x-mova-contract: operator_terminal_smoke_v0
+                    trace_ref: trace:req_http_generic_01
+                  inputs:
+                    message: mova http generic smoke
+                  context:
+                    tenant_id: tenant_001
+                  correlation:
+                    trace_id: trace_http_generic_01
+                    correlation_id: corr_http_generic_01
+                  timestamps:
+                    requested_at: "2026-05-23T08:30:00Z"
       responses:
         "200":
           description: Validation result

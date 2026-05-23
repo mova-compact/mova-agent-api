@@ -1,6 +1,7 @@
 param(
   [string]$BaseUrl = "https://mova-agent-api-v0.s-myasoedov81.workers.dev",
   [string]$WebhookUrl = "",
+  [string]$EndpointRef = "webhook_site_test",
   [string]$IdempotencyKey = ""
 )
 
@@ -17,9 +18,17 @@ $payload.correlation = @{ correlation_id = "corr:$rid"; trace_id = "trace:$rid" 
 if ($WebhookUrl -ne "") {
   $payload.action.action_type = "webhook_notify"
   $payload.action.connector_context = @{
-    connector_id = "connector.webhook_site.v1"
+    connector_id = "connector.http.generic.v1"
     side_effect_intent = "external_network"
-    target_url = $WebhookUrl
+    endpoint_ref = $EndpointRef
+    method = "POST"
+    headers = @{
+      "x-mova-smoke" = "public"
+    }
+  }
+  $payload.action.input_payload = @{
+    message = "MOVA universal HTTP smoke"
+    target_url_hint = $WebhookUrl
   }
 }
 

@@ -8,6 +8,7 @@ use crate::secrets::SecretRef;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
@@ -86,12 +87,21 @@ impl ConnectorExecutionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointRegistryEntry {
+    pub endpoint_ref: String,
+    pub url: String,
+    pub allowed_methods: Vec<String>,
+    pub allowed_side_effect_intents: Vec<SideEffectIntent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorExecutionConfig {
     pub adapter_kind: String,
     pub allowed_connectors: Vec<String>,
     pub allowed_side_effect_intents: Vec<SideEffectIntent>,
     pub offline_stub_rules: Vec<OfflineStubRule>,
     pub allowed_webhook_urls: Vec<String>,
+    pub endpoint_registry: Vec<EndpointRegistryEntry>,
     pub timeout_ms: u64,
     pub max_retries: u8,
 }
@@ -111,6 +121,7 @@ impl ConnectorExecutionConfig {
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
             allowed_webhook_urls: Vec::new(),
+            endpoint_registry: Vec::new(),
             timeout_ms: 10_000,
             max_retries: 0,
         }
@@ -126,6 +137,7 @@ impl ConnectorExecutionConfig {
         if self.adapter_kind != "deterministic_local"
             && self.adapter_kind != "offline_stub"
             && self.adapter_kind != "webhook_site"
+            && self.adapter_kind != "http_generic"
         {
             return Err(ConnectorExecutionError::new(
                 "connector_config_invalid",
@@ -172,6 +184,54 @@ impl ConnectorExecutionConfig {
                     "connector_config_invalid",
                     "webhook_site requires external_network side-effect intent allowance",
                 ));
+            }
+        }
+        if self.adapter_kind == "http_generic" {
+            if self.endpoint_registry.is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "connector_config_invalid",
+                    "endpoint_registry is required for http_generic",
+                ));
+            }
+            for endpoint in &self.endpoint_registry {
+                if endpoint.endpoint_ref.trim().is_empty() {
+                    return Err(ConnectorExecutionError::new(
+                        "connector_config_invalid",
+                        "endpoint_ref must not be empty",
+                    ));
+                }
+                let parsed = Url::parse(&endpoint.url).map_err(|_| {
+                    ConnectorExecutionError::new(
+                        "connector_config_invalid",
+                        "endpoint_registry url must be a valid absolute URL",
+                    )
+                })?;
+                if parsed.scheme() != "https" {
+                    return Err(ConnectorExecutionError::new(
+                        "connector_config_invalid",
+                        "http_generic endpoint URLs must use https",
+                    ));
+                }
+                if endpoint.allowed_methods.is_empty() {
+                    return Err(ConnectorExecutionError::new(
+                        "connector_config_invalid",
+                        "endpoint allowed_methods must not be empty",
+                    ));
+                }
+                for method in &endpoint.allowed_methods {
+                    if method != "GET" && method != "POST" {
+                        return Err(ConnectorExecutionError::new(
+                            "connector_config_invalid",
+                            "endpoint allowed_methods supports only GET/POST in V0",
+                        ));
+                    }
+                }
+                if endpoint.allowed_side_effect_intents.is_empty() {
+                    return Err(ConnectorExecutionError::new(
+                        "connector_config_invalid",
+                        "endpoint allowed_side_effect_intents must not be empty",
+                    ));
+                }
             }
         }
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
@@ -342,6 +402,24 @@ pub struct WebhookHttpResult {
     pub body_preview: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericHttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Value>,
+    pub timeout_ms: u64,
+}
+
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+pub trait GenericHttpClient: Send + Sync {
+    async fn execute(
+        &self,
+        request: GenericHttpRequest,
+    ) -> Result<WebhookHttpResult, ConnectorExecutionError>;
+}
+
 #[derive(Debug, Clone)]
 pub struct DisabledWebhookHttpClient;
 
@@ -360,6 +438,20 @@ impl WebhookHttpClient for DisabledWebhookHttpClient {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl GenericHttpClient for DisabledWebhookHttpClient {
+    async fn execute(
+        &self,
+        _request: GenericHttpRequest,
+    ) -> Result<WebhookHttpResult, ConnectorExecutionError> {
+        Err(ConnectorExecutionError::new(
+            "connector_provider_unavailable",
+            "generic HTTP provider is unavailable in this runtime",
+        ))
+    }
+}
+
 #[derive(Clone)]
 pub struct WebhookSiteConnectorExecutor {
     config: ConnectorExecutionConfig,
@@ -368,6 +460,18 @@ pub struct WebhookSiteConnectorExecutor {
 
 impl WebhookSiteConnectorExecutor {
     pub fn new(config: ConnectorExecutionConfig, http_client: Arc<dyn WebhookHttpClient>) -> Self {
+        Self { config, http_client }
+    }
+}
+
+#[derive(Clone)]
+pub struct GenericHttpConnectorExecutor {
+    config: ConnectorExecutionConfig,
+    http_client: Arc<dyn GenericHttpClient>,
+}
+
+impl GenericHttpConnectorExecutor {
+    pub fn new(config: ConnectorExecutionConfig, http_client: Arc<dyn GenericHttpClient>) -> Self {
         Self { config, http_client }
     }
 }
@@ -512,6 +616,183 @@ impl ConnectorExecutor for WebhookSiteConnectorExecutor {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl ConnectorExecutor for GenericHttpConnectorExecutor {
+    async fn execute(
+        &self,
+        request: ConnectorExecutionRequest,
+    ) -> Result<ConnectorExecutionResult, ConnectorExecutionError> {
+        if !self
+            .config
+            .allowed_connectors
+            .iter()
+            .any(|allowed| allowed == &request.connector_id)
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_denied",
+                "connector_id is not allowed",
+            ));
+        }
+        if !self
+            .config
+            .allowed_side_effect_intents
+            .iter()
+            .any(|intent| *intent == request.side_effect_intent)
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_side_effect_denied",
+                "side_effect_intent is not allowed",
+            ));
+        }
+        if request.side_effect_intent != SideEffectIntent::ExternalNetwork {
+            return Err(ConnectorExecutionError::new(
+                "connector_side_effect_denied",
+                "http_generic requires external_network side_effect_intent",
+            ));
+        }
+
+        let endpoint_ref = request
+            .request
+            .get("endpoint_ref")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_request_invalid",
+                    "endpoint_ref is required for http_generic connector",
+                )
+            })?
+            .to_string();
+        let endpoint = self
+            .config
+            .endpoint_registry
+            .iter()
+            .find(|entry| entry.endpoint_ref == endpoint_ref)
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_endpoint_denied",
+                    "endpoint_ref is not configured in runtime allowlist",
+                )
+            })?;
+
+        if !endpoint
+            .allowed_side_effect_intents
+            .iter()
+            .any(|i| *i == request.side_effect_intent)
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_side_effect_denied",
+                "endpoint_ref does not allow side_effect_intent",
+            ));
+        }
+
+        let method = request
+            .request
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("POST")
+            .to_ascii_uppercase();
+        if method != "GET" && method != "POST" {
+            return Err(ConnectorExecutionError::new(
+                "connector_method_denied",
+                "http_generic supports only GET/POST in V0",
+            ));
+        }
+        if !endpoint.allowed_methods.iter().any(|m| m == &method) {
+            return Err(ConnectorExecutionError::new(
+                "connector_method_denied",
+                "method is not allowlisted for endpoint_ref",
+            ));
+        }
+
+        let headers = request
+            .request
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.to_string(), s.to_string())))
+                    .collect::<HashMap<String, String>>()
+            })
+            .unwrap_or_default();
+        let body = request.request.get("body").cloned();
+
+        let mut attempt: u8 = 0;
+        let mut last_http_status: Option<u16> = None;
+        let http_result = loop {
+            let result = self
+                .http_client
+                .execute(GenericHttpRequest {
+                    method: method.clone(),
+                    url: endpoint.url.clone(),
+                    headers: headers.clone(),
+                    body: body.clone(),
+                    timeout_ms: self.config.timeout_ms,
+                })
+                .await;
+            match result {
+                Ok(r) if (200..300).contains(&r.status) => break r,
+                Ok(r) => {
+                    last_http_status = Some(r.status);
+                    if r.status >= 500 && attempt < self.config.max_retries {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(ConnectorExecutionError::new(
+                        "connector_provider_http_failed",
+                        &format!("http_generic responded with status {}", r.status),
+                    ));
+                }
+                Err(err) => {
+                    if (err.code == "connector_provider_network_failed"
+                        || err.code == "connector_provider_timeout")
+                        && attempt < self.config.max_retries
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        };
+
+        let call = ConnectorCall {
+            connector_id: request.connector_id,
+            call_id: request.call_id,
+            side_effect_intent: request.side_effect_intent,
+            request: request.request,
+            auth_context: request.auth_context,
+            policy_result: request.policy_result,
+            status: ConnectorCallStatus::Completed,
+            response: json!({
+                "connector_mode": "http_generic",
+                "side_effect_performed": true,
+                "provider": "http.generic.v1",
+                "endpoint_ref": endpoint_ref,
+                "resolved_url": endpoint.url,
+                "method": method,
+                "http_status": http_result.status,
+                "attempts": attempt + 1,
+                "max_retries": self.config.max_retries,
+                "timeout_ms": self.config.timeout_ms,
+                "response_preview": http_result.body_preview,
+                "credential_ref_count": request.credential_refs.len(),
+                "last_non_2xx_http_status": last_http_status
+            }),
+            timing: ConnectorTiming {
+                started_at: request.started_at,
+                finished_at: Some("2026-05-23T10:30:01Z".to_string()),
+                duration_ms: Some(1),
+            },
+        };
+
+        Ok(ConnectorExecutionResult {
+            call,
+            guard_reason: "connector_guard_allow_http_generic".to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FailingConnectorExecutor {
     err: ConnectorExecutionError,
@@ -544,6 +825,9 @@ pub fn create_connector_executor(config: &ConnectorExecutionConfig) -> Box<dyn C
         }
         Ok(()) if config.adapter_kind == "webhook_site" => Box::new(
             WebhookSiteConnectorExecutor::new(config.clone(), Arc::new(DisabledWebhookHttpClient)),
+        ),
+        Ok(()) if config.adapter_kind == "http_generic" => Box::new(
+            GenericHttpConnectorExecutor::new(config.clone(), Arc::new(DisabledWebhookHttpClient)),
         ),
         Ok(()) => Box::new(FailingConnectorExecutor::new(ConnectorExecutionError::new(
             "connector_config_invalid",
@@ -628,6 +912,7 @@ mod tests {
                 guard_reason: "stub_allow".to_string(),
             }],
             allowed_webhook_urls: vec![],
+            endpoint_registry: vec![],
             timeout_ms: 10_000,
             max_retries: 0,
         };
