@@ -182,12 +182,20 @@ pub fn create_run_store(config: &StorageConfig) -> Box<dyn RunStore> {
 #[cfg(feature = "cloudflare_worker")]
 pub struct CloudflareKvRunStore {
     kv: worker::kv::KvStore,
+    ttl_seconds: Option<u64>,
 }
 
 #[cfg(feature = "cloudflare_worker")]
 impl CloudflareKvRunStore {
     pub fn new(kv: worker::kv::KvStore) -> Self {
-        Self { kv }
+        Self {
+            kv,
+            ttl_seconds: None,
+        }
+    }
+
+    pub fn new_with_ttl(kv: worker::kv::KvStore, ttl_seconds: Option<u64>) -> Self {
+        Self { kv, ttl_seconds }
     }
 
     fn key_for(run_id: &str) -> String {
@@ -203,10 +211,14 @@ impl RunStore for CloudflareKvRunStore {
         let key = Self::key_for(&snapshot.run_id);
         let body = serde_json::to_string(&snapshot)
             .map_err(|err| StorageError::new("storage_serialize_failed", &format!("serialize failed: {err}")))?;
-        self.kv
+        let mut put = self
+            .kv
             .put(&key, body)
-            .map_err(|err| StorageError::new("storage_write_failed", &format!("kv put build failed: {err}")))?
-            .execute()
+            .map_err(|err| StorageError::new("storage_write_failed", &format!("kv put build failed: {err}")))?;
+        if let Some(ttl) = self.ttl_seconds {
+            put = put.expiration_ttl(ttl);
+        }
+        put.execute()
             .await
             .map_err(|err| StorageError::new("storage_write_failed", &format!("kv put execute failed: {err}")))?;
         Ok(())

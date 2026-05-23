@@ -72,6 +72,8 @@ async fn offline_stub_returns_rule_driven_result() {
         allowed_connectors: vec![],
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
+        timeout_ms: 10_000,
+        max_retries: 0,
         offline_stub_rules: vec![OfflineStubRule {
             connector_id: "connector.docs.v1".to_string(),
             call_status: ConnectorCallStatus::Completed,
@@ -93,6 +95,8 @@ async fn invalid_config_maps_to_deterministic_failure() {
         allowed_connectors: vec![],
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
+        timeout_ms: 10_000,
+        max_retries: 0,
         offline_stub_rules: vec![],
     };
     let exec = create_connector_executor(&cfg);
@@ -128,6 +132,8 @@ async fn webhook_site_allows_only_allowlisted_target() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        timeout_ms: 10_000,
+        max_retries: 0,
     };
     let exec = WebhookSiteConnectorExecutor::new(
         cfg,
@@ -175,6 +181,8 @@ async fn webhook_site_denies_non_allowlisted_target() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        timeout_ms: 10_000,
+        max_retries: 0,
     };
     let exec = WebhookSiteConnectorExecutor::new(
         cfg,
@@ -218,6 +226,8 @@ async fn webhook_site_maps_provider_http_failure() {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
+        timeout_ms: 10_000,
+        max_retries: 0,
     };
     let exec = WebhookSiteConnectorExecutor::new(
         cfg,

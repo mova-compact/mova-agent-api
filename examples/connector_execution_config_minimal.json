@@ -8,5 +8,7 @@
     "local_only"
   ],
   "offline_stub_rules": [],
-  "allowed_webhook_urls": []
+  "allowed_webhook_urls": [],
+  "timeout_ms": 10000,
+  "max_retries": 0
 }

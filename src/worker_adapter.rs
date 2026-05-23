@@ -17,12 +17,18 @@ use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use worker::{event, Context, Env, Method, Request, RequestInit, Response, Result, Router};
+use worker::wasm_bindgen::JsCast;
+use worker::wasm_bindgen::JsValue;
+use worker::wasm_bindgen_futures::JsFuture;
+use worker::{event, js_sys, web_sys, Context, Env, Request, Response, Result, Router};
+
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 struct WorkerState {
     run_store: Arc<dyn RunStore>,
     auth_verifier: Arc<dyn AuthVerifier>,
     connector_executor: Arc<dyn ConnectorExecutor>,
+    denied_client_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,39 +48,40 @@ impl WebhookHttpClient for WorkerWebhookHttpClient {
                 "failed to serialize webhook payload",
             )
         })?;
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post);
-        init.with_body(Some(payload.into()));
-        let mut req = Request::new_with_init(url, &init).map_err(|err| {
-            ConnectorExecutionError::new(
-                "connector_request_invalid",
-                &format!("failed to build webhook request: {err}"),
-            )
+        let init = web_sys::RequestInit::new();
+        init.set_method("POST");
+        init.set_body(&JsValue::from_str(&payload));
+        let headers = web_sys::Headers::new().map_err(|_| {
+            ConnectorExecutionError::new("connector_request_invalid", "failed to create headers")
         })?;
-        req.headers_mut()
-            .map_err(|err| {
-                ConnectorExecutionError::new(
-                    "connector_request_invalid",
-                    &format!("failed to set webhook headers: {err}"),
-                )
-            })?
+        headers
             .set("content-type", "application/json")
-            .map_err(|err| {
+            .map_err(|_| {
                 ConnectorExecutionError::new(
                     "connector_request_invalid",
-                    &format!("failed to set webhook content-type: {err}"),
+                    "failed to set webhook content-type",
                 )
             })?;
+        init.set_headers(&headers);
 
-        let mut response = worker::Fetch::Request(req)
-            .send()
-            .await
-            .map_err(|err| {
-                ConnectorExecutionError::new("connector_provider_network_failed", &format!("{err}"))
-            })?;
-        let status = response.status_code();
-        let text = response.text().await.unwrap_or_default();
-        let preview: String = text.chars().take(256).collect();
+        let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+        let promise = global
+            .fetch_with_str_and_init(url, &init);
+        let response_js = JsFuture::from(promise).await.map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "webhook fetch failed")
+        })?;
+        let response: web_sys::Response = response_js.dyn_into().map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "webhook response cast failed")
+        })?;
+        let status = response.status();
+        let text_js = JsFuture::from(response.text().map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "webhook response text failed")
+        })?)
+        .await
+        .map_err(|_| {
+            ConnectorExecutionError::new("connector_provider_network_failed", "webhook response text await failed")
+        })?;
+        let preview: String = text_js.as_string().unwrap_or_default().chars().take(256).collect();
         Ok(WebhookHttpResult {
             status,
             body_preview: preview,
@@ -90,14 +97,32 @@ fn webhook_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
         offline_stub_rules: Vec::new(),
         allowed_webhook_urls: vec![allowed_url],
+        timeout_ms: 10_000,
+        max_retries: 0,
     })
 }
 
 fn state_from_env(env: &Env) -> WorkerState {
+    let kv_ttl_seconds = env
+        .var("MOVA_RUN_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.to_string().parse::<u64>().ok())
+        .filter(|v| *v > 0);
     let run_store: Arc<dyn RunStore> = match env.kv("MOVA_RUN_STORE") {
-        Ok(kv) => Arc::new(CloudflareKvRunStore::new(kv)),
+        Ok(kv) => Arc::new(CloudflareKvRunStore::new_with_ttl(kv, kv_ttl_seconds)),
         Err(_) => Arc::new(crate::storage::InMemoryRunStore::new()),
     };
+    let denied_client_ids = env
+        .var("MOVA_RATE_LIMIT_DENY_CLIENTS")
+        .ok()
+        .map(|v| {
+            v.to_string()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let connector_executor: Arc<dyn ConnectorExecutor> = if let Some(cfg) = webhook_config_from_env(env) {
         if cfg.validate().is_ok() {
@@ -113,6 +138,8 @@ fn state_from_env(env: &Env) -> WorkerState {
                     allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
                     offline_stub_rules: Vec::new(),
                     allowed_webhook_urls: vec!["https://webhook.site/invalid".to_string()],
+                    timeout_ms: 10_000,
+                    max_retries: 0,
                 },
                 Arc::new(DisabledWebhookHttpClient),
             ))
@@ -127,6 +154,7 @@ fn state_from_env(env: &Env) -> WorkerState {
         run_store,
         auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
         connector_executor,
+        denied_client_ids,
     }
 }
 
@@ -143,6 +171,39 @@ fn parse_side_effect_intent(connector_context: &Value) -> SideEffectIntent {
     }
 }
 
+fn sanitize_idempotency_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(96)
+        .collect()
+}
+
+fn json_error(status: u16, code: &str, message: &str, details: Vec<String>) -> Result<Response> {
+    Response::from_json(&json!({
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details
+        }
+    }))
+    .map(|r| r.with_status(status))
+}
+
+fn parse_json_with_limit(bytes: &[u8]) -> std::result::Result<Value, String> {
+    if bytes.len() > MAX_REQUEST_BODY_BYTES {
+        return Err(format!("body too large: {} bytes", bytes.len()));
+    }
+    serde_json::from_slice::<Value>(bytes).map_err(|err| format!("invalid json: {err}"))
+}
+
+
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let state = Arc::new(state_from_env(&env));
@@ -150,6 +211,22 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let state_get_run = Arc::clone(&state);
     let state_get_evidence = Arc::clone(&state);
     Router::new()
+        .get_async("/health", |_req, _ctx| async move {
+            Response::from_json(&json!({
+                "status": "ok",
+                "service": "mova-agent-api-v0",
+                "version": "v0"
+            }))
+        })
+        .get_async("/ready", |_req, _ctx| async move {
+            Response::from_json(&json!({
+                "ready": true,
+                "checks": {
+                    "storage": "bound",
+                    "connector": "configured"
+                }
+            }))
+        })
         .get_async("/capabilities", |_req, _ctx| async move {
             Response::from_json(&json!({
                 "action_types": ["validate_document", "webhook_notify"],
@@ -172,65 +249,121 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }))
         })
         .post_async("/actions/validate", |mut req, _ctx| async move {
-            let payload: Value = req.json().await?;
+            let body = req.bytes().await?;
+            let payload = match parse_json_with_limit(&body) {
+                Ok(v) => v,
+                Err(message) if message.starts_with("body too large") => {
+                    return json_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+                }
+                Err(message) => {
+                    return json_error(400, "validation_failed", "request parsing failed", vec![message]);
+                }
+            };
             match parse_request_envelope(payload) {
                 Ok(envelope) => {
                     let semantic_errors = validate_request_envelope(&envelope);
                     if semantic_errors.is_empty() {
                         Response::from_json(&json!({"valid": true}))
                     } else {
-                        Response::error(
-                            format!(
-                                "{{\"error\":{{\"code\":\"validation_failed\",\"message\":\"request validation failed\",\"details\":{:?}}}}}",
-                                semantic_errors
-                                    .iter()
-                                    .map(|e| format!("{}: {}", e.field, e.message))
-                                    .collect::<Vec<_>>()
-                            ),
+                        json_error(
                             400,
+                            "validation_failed",
+                            "request validation failed",
+                            semantic_errors
+                                .iter()
+                                .map(|e| format!("{}: {}", e.field, e.message))
+                                .collect::<Vec<_>>(),
                         )
                     }
                 }
-                Err(err) => Response::error(
-                    format!(
-                        "{{\"error\":{{\"code\":\"validation_failed\",\"message\":\"request parsing failed\",\"details\":[\"payload: {}\"]}}}}",
-                        err
-                    ),
+                Err(err) => json_error(
                     400,
+                    "validation_failed",
+                    "request parsing failed",
+                    vec![format!("payload: {err}")],
                 ),
             }
         })
         .post_async("/actions/run", move |mut req, _ctx| {
             let state = Arc::clone(&state_run);
             async move {
-                let payload: Value = req.json().await?;
+                let idempotency_key = req
+                    .headers()
+                    .get("idempotency-key")
+                    .ok()
+                    .flatten()
+                    .map(|v| sanitize_idempotency_key(v.as_str()));
+                let body = req.bytes().await?;
+                let payload = match parse_json_with_limit(&body) {
+                    Ok(v) => v,
+                    Err(message) if message.starts_with("body too large") => {
+                        return json_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+                    }
+                    Err(message) => {
+                        return json_error(400, "validation_failed", "request parsing failed", vec![message]);
+                    }
+                };
                 let envelope = match parse_request_envelope(payload) {
                     Ok(v) => v,
                     Err(err) => {
-                        return Response::error(
-                            format!(
-                                "{{\"error\":{{\"code\":\"validation_failed\",\"message\":\"request parsing failed\",\"details\":[\"payload: {}\"]}}}}",
-                                err
-                            ),
+                        return json_error(
                             400,
+                            "validation_failed",
+                            "request parsing failed",
+                            vec![format!("payload: {err}")],
                         );
                     }
                 };
                 let semantic_errors = validate_request_envelope(&envelope);
                 if !semantic_errors.is_empty() {
-                    return Response::error(
-                        format!(
-                            "{{\"error\":{{\"code\":\"validation_failed\",\"message\":\"request validation failed\",\"details\":{:?}}}}}",
-                            semantic_errors
-                                .iter()
-                                .map(|e| format!("{}: {}", e.field, e.message))
-                                .collect::<Vec<_>>()
-                        ),
+                    return json_error(
                         400,
+                        "validation_failed",
+                        "request validation failed",
+                        semantic_errors
+                            .iter()
+                            .map(|e| format!("{}: {}", e.field, e.message))
+                            .collect::<Vec<_>>(),
                     );
                 }
 
-                let run_id = format!("run_{}", envelope.request_id);
+                let client_id = envelope.source.client_id.clone();
+                if state.denied_client_ids.iter().any(|v| v == &client_id) {
+                    return json_error(
+                        429,
+                        "rate_limited",
+                        "request denied by abuse guard policy",
+                        vec![format!("client_id: {client_id}")],
+                    );
+                }
+
+                let run_id = if let Some(key) = idempotency_key.clone() {
+                    format!("run_idem_{key}")
+                } else {
+                    format!("run_{}", envelope.request_id)
+                };
+                if idempotency_key.is_some() {
+                    match state.run_store.get_snapshot(&run_id).await {
+                        Ok(Some(snapshot)) => {
+                            return Response::from_json(&json!({
+                                "run_id": snapshot.run_id,
+                                "status": snapshot.evidence.status.as_str(),
+                                "trace_ref": snapshot.evidence.trace_ref,
+                                "observation_count": snapshot.evidence.observation_refs.len(),
+                                "idempotent_replay": true
+                            }));
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            return json_error(
+                                503,
+                                "storage_unavailable",
+                                "storage adapter failed",
+                                vec![err.message],
+                            );
+                        }
+                    }
+                }
                 let admission = PolicyAdmission::from_auth_context(
                     format!("adm_{}", envelope.request_id),
                     envelope.action.action_id.clone(),
@@ -240,12 +373,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     state.auth_verifier.as_ref(),
                 );
                 if admission.decision != AdmissionDecision::Allow {
-                    return Response::error(
-                        format!(
-                            "{{\"error\":{{\"code\":\"authorization_failed\",\"message\":\"policy authorization failed\",\"details\":[\"reason_code: {}\"]}}}}",
-                            admission.reason_code
-                        ),
+                    return json_error(
                         403,
+                        "authorization_failed",
+                        "policy authorization failed",
+                        vec![format!("reason_code: {}", admission.reason_code)],
                     );
                 }
 
@@ -294,13 +426,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     .await
                 {
                     Ok(ConnectorExecutionResult { call, .. }) => call,
-                    Err(ConnectorExecutionError { message, .. }) => {
-                        return Response::error(
-                            format!(
-                                "{{\"error\":{{\"code\":\"connector_execution_failed\",\"message\":\"{}\"}}}}",
-                                message
-                            ),
-                            502,
+                    Err(ConnectorExecutionError { code, message }) => {
+                        let status = if code.contains("denied") { 403 } else if code.contains("timeout") { 504 } else { 502 };
+                        return json_error(
+                            status,
+                            "connector_execution_failed",
+                            &message,
+                            vec![format!("connector_code: {code}")],
                         );
                     }
                 };
@@ -331,12 +463,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     observations: journal.records().to_vec(),
                 };
                 if let Err(err) = state.run_store.put_snapshot(snapshot.clone()).await {
-                    return Response::error(
-                        format!(
-                            "{{\"error\":{{\"code\":\"storage_unavailable\",\"message\":\"{}\"}}}}",
-                            err.message
-                        ),
+                    return json_error(
                         503,
+                        "storage_unavailable",
+                        "storage adapter failed",
+                        vec![err.message],
                     );
                 }
 

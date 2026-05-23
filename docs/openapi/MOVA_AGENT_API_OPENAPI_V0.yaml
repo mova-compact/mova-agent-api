@@ -7,6 +7,20 @@ info:
 servers:
   - url: https://api.mova-agent.local
 paths:
+  /health:
+    get:
+      summary: Liveness health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is alive
+  /ready:
+    get:
+      summary: Readiness check for runtime dependencies
+      operationId: getReady
+      responses:
+        "200":
+          description: Service is ready
   /capabilities:
     get:
       summary: Get supported capabilities
@@ -82,6 +96,13 @@ paths:
           schema:
             type: string
           description: Optional auth metadata source tag, for example `header`.
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: Optional idempotency key for replay-safe run submission.
       requestBody:
         required: true
         content:
@@ -188,6 +209,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: Authorization failure or connector guard denial
           content:
@@ -196,6 +229,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "502":
           description: Connector execution failure or runtime secret resolution failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Connector timeout
           content:
             application/json:
               schema:

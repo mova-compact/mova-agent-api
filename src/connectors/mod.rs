@@ -92,6 +92,8 @@ pub struct ConnectorExecutionConfig {
     pub allowed_side_effect_intents: Vec<SideEffectIntent>,
     pub offline_stub_rules: Vec<OfflineStubRule>,
     pub allowed_webhook_urls: Vec<String>,
+    pub timeout_ms: u64,
+    pub max_retries: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +111,8 @@ impl ConnectorExecutionConfig {
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
             allowed_webhook_urls: Vec::new(),
+            timeout_ms: 10_000,
+            max_retries: 0,
         }
     }
 
@@ -169,6 +173,18 @@ impl ConnectorExecutionConfig {
                     "webhook_site requires external_network side-effect intent allowance",
                 ));
             }
+        }
+        if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
+            return Err(ConnectorExecutionError::new(
+                "connector_config_invalid",
+                "timeout_ms must be in range 1..=120000",
+            ));
+        }
+        if self.max_retries > 3 {
+            return Err(ConnectorExecutionError::new(
+                "connector_config_invalid",
+                "max_retries must be <= 3",
+            ));
         }
         Ok(())
     }
@@ -431,13 +447,35 @@ impl ConnectorExecutor for WebhookSiteConnectorExecutor {
             "trace_ref": request.request.get("trace_ref").and_then(|v| v.as_str()).unwrap_or_default(),
         });
 
-        let http_result = self.http_client.post_json(target_url, &outbound_payload).await?;
-        if !(200..300).contains(&http_result.status) {
-            return Err(ConnectorExecutionError::new(
-                "connector_provider_http_failed",
-                &format!("webhook responded with status {}", http_result.status),
-            ));
-        }
+        let mut attempt: u8 = 0;
+        let mut last_http_status: Option<u16> = None;
+        let http_result = loop {
+            let result = self.http_client.post_json(target_url, &outbound_payload).await;
+            match result {
+                Ok(r) if (200..300).contains(&r.status) => break r,
+                Ok(r) => {
+                    last_http_status = Some(r.status);
+                    if r.status >= 500 && attempt < self.config.max_retries {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(ConnectorExecutionError::new(
+                        "connector_provider_http_failed",
+                        &format!("webhook responded with status {}", r.status),
+                    ));
+                }
+                Err(err) => {
+                    if (err.code == "connector_provider_network_failed"
+                        || err.code == "connector_provider_timeout")
+                        && attempt < self.config.max_retries
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        };
 
         let call = ConnectorCall {
             connector_id: request.connector_id,
@@ -452,9 +490,13 @@ impl ConnectorExecutor for WebhookSiteConnectorExecutor {
                 "side_effect_performed": true,
                 "provider": "webhook.site",
                 "http_status": http_result.status,
+                "attempts": attempt + 1,
+                "max_retries": self.config.max_retries,
+                "timeout_ms": self.config.timeout_ms,
                 "request_correlation_id": outbound_payload["correlation_id"],
                 "run_id": outbound_payload["run_id"],
-                "response_preview": http_result.body_preview
+                "response_preview": http_result.body_preview,
+                "last_non_2xx_http_status": last_http_status
             }),
             timing: ConnectorTiming {
                 started_at: request.started_at,
@@ -586,6 +628,8 @@ mod tests {
                 guard_reason: "stub_allow".to_string(),
             }],
             allowed_webhook_urls: vec![],
+            timeout_ms: 10_000,
+            max_retries: 0,
         };
         let exec = OfflineStubConnectorExecutor::new(config);
         let result = exec

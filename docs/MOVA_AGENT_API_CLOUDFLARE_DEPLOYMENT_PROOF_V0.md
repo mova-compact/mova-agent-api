@@ -2,7 +2,7 @@
 
 ## Deployment status
 
-- Verdict: `PASS` (deployment complete with Cloudflare KV persistence and controlled Webhook.site external connector proof)
+- Verdict: `PASS` (deployment complete with KV persistence, controlled Webhook.site connector, and operational hardening endpoints)
 - Target worker name: `mova-agent-api-v0`
 - workers.dev subdomain chosen: `s-myasoedov81.workers.dev` (account-level existing subdomain)
 - Deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
@@ -72,7 +72,7 @@ Core business modules and V0 boundaries were not rewritten.
   - worker upload succeeded.
   - publish succeeded.
   - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
-  - active version: `8aac950f-982c-4ac7-b233-f7c988269521`
+  - active version: `e586bd32-d9e8-4cba-a1c7-41505584db7a`
 
 ## Blocking error summary
 
@@ -145,6 +145,14 @@ Webhook.site provider smoke:
   - Received body contains matching:
     - `run_id=run_req_webhook_1779546805`
     - `correlation_id=corr:req_webhook_1779546805`
+
+Operational hardening smoke:
+
+- `GET /health` -> `status=ok`
+- `GET /ready` -> `ready=true`
+- `POST /actions/run` with `Idempotency-Key=harden-smoke-01` -> `run_id=run_idem_harden-smoke-01`
+- `GET /runs/run_idem_harden-smoke-01` -> success
+- `GET /runs/run_idem_harden-smoke-01/evidence` -> success with connector summary including `attempts`, `max_retries`, `timeout_ms`
 
 Secret-safety and side-effect checks:
 

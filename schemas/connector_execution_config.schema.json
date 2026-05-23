@@ -10,7 +10,9 @@
     "allowed_connectors",
     "allowed_side_effect_intents",
     "offline_stub_rules",
-    "allowed_webhook_urls"
+    "allowed_webhook_urls",
+    "timeout_ms",
+    "max_retries"
   ],
   "properties": {
     "adapter_kind": {
@@ -78,6 +80,16 @@
         "type": "string",
         "format": "uri"
       }
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120000
+    },
+    "max_retries": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
     }
   }
 }
