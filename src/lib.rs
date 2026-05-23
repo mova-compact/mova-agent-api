@@ -14,3 +14,6 @@ pub mod request;
 pub mod runtime;
 pub mod secrets;
 pub mod storage;
+
+#[cfg(all(feature = "cloudflare_worker", target_arch = "wasm32"))]
+mod worker_adapter;
