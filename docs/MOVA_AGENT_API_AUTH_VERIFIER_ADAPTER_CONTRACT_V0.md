@@ -19,10 +19,11 @@ Define a provider-agnostic external verifier adapter boundary and explicit trust
 
 `AuthTrustConfig` defines explicit trust rules:
 
-- `verifier_kind` (currently supported: `deterministic_local`)
+- `verifier_kind` (currently supported: `deterministic_local`, `offline_provider_stub`)
 - `trusted_issuers`
 - `trusted_audiences`
 - `allowed_scopes`
+- `offline_stub_fixtures` (for deterministic offline provider stub responses)
 
 Validation behavior:
 
@@ -35,12 +36,18 @@ Deterministic production token reference format:
 
 - `token://<issuer>/<subject>?aud=<audience>`
 
-Verification checks:
+Verification checks for deterministic local verifier:
 
 1. token shape parseability
 2. trusted issuer membership
 3. trusted audience membership (if configured)
 4. scope filtering against `allowed_scopes`
+
+Offline provider stub checks:
+
+1. deterministic fixture lookup by `token_ref`
+2. returns fixture-defined `verified | unverified` result
+3. missing fixture returns deterministic unverified reason
 
 ## Ownership guarantees
 

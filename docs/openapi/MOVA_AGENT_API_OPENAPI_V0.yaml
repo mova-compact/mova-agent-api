@@ -47,7 +47,12 @@ paths:
           required: false
           schema:
             type: string
+            enum:
+              - placeholder
+              - production
+              - offline_provider_stub
           description: Optional placeholder auth mode metadata forwarded to policy input.
+          example: production
         - name: x-mova-actor-id
           in: header
           required: false
@@ -60,12 +65,14 @@ paths:
           schema:
             type: string
           description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
+          example: token://mova-trusted/agent_001?aud=mova-agent-api
         - name: x-mova-scopes
           in: header
           required: false
           schema:
             type: string
           description: Optional comma-separated scope hints forwarded to policy input.
+          example: actions.run,actions.validate
         - name: x-mova-auth-source
           in: header
           required: false
@@ -111,7 +118,12 @@ paths:
           required: false
           schema:
             type: string
+            enum:
+              - placeholder
+              - production
+              - offline_provider_stub
           description: Optional placeholder auth mode metadata forwarded to policy input.
+          example: production
         - name: x-mova-actor-id
           in: header
           required: false
@@ -124,12 +136,14 @@ paths:
           schema:
             type: string
           description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
+          example: token://mova-trusted/agent_001?aud=mova-agent-api
         - name: x-mova-scopes
           in: header
           required: false
           schema:
             type: string
           description: Optional comma-separated scope hints forwarded to policy input.
+          example: actions.run,actions.validate
         - name: x-mova-auth-source
           in: header
           required: false
