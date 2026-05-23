@@ -22,6 +22,7 @@ paths:
                 required:
                   - action_types
                   - policy_decisions
+                  - execution_path
                 properties:
                   action_types:
                     type: array
@@ -31,6 +32,11 @@ paths:
                     type: array
                     items:
                       type: string
+                  execution_path:
+                    type: array
+                    items:
+                      type: string
+                    minItems: 7
   /actions/validate:
     post:
       summary: Validate action request envelope without execution

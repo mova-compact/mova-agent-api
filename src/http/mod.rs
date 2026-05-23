@@ -44,6 +44,7 @@ struct RunSnapshot {
 struct CapabilitiesResponse {
     action_types: Vec<String>,
     policy_decisions: Vec<String>,
+    execution_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +121,15 @@ async fn get_capabilities() -> Json<CapabilitiesResponse> {
             "deny".to_string(),
             "require_review".to_string(),
             "redact".to_string(),
+        ],
+        execution_path: vec![
+            "agent_request".to_string(),
+            "action_model".to_string(),
+            "policy_admission".to_string(),
+            "flat_execution".to_string(),
+            "connector_call".to_string(),
+            "observation_write".to_string(),
+            "evidence_response".to_string(),
         ],
     })
 }

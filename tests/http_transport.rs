@@ -68,6 +68,18 @@ async fn get_capabilities_returns_v0_metadata() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert!(json["action_types"].is_array());
     assert!(json["policy_decisions"].is_array());
+    assert_eq!(
+        json["execution_path"],
+        serde_json::json!([
+            "agent_request",
+            "action_model",
+            "policy_admission",
+            "flat_execution",
+            "connector_call",
+            "observation_write",
+            "evidence_response"
+        ])
+    );
 }
 
 #[tokio::test]
