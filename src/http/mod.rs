@@ -6,9 +6,10 @@ use crate::connectors::build_connector_call;
 use crate::evidence::{build_evidence_response, EvidenceResponse, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
-use crate::policy::{AdmissionDecision, PolicyAdmission};
-use crate::request::{parse_request_envelope, validate_request_envelope, RequestValidationError};
+use crate::policy::PolicyAdmission;
+use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -134,7 +135,8 @@ async fn get_capabilities() -> Json<CapabilitiesResponse> {
     })
 }
 
-async fn post_actions_validate(Json(payload): Json<Value>) -> impl IntoResponse {
+async fn post_actions_validate(headers: HeaderMap, Json(payload): Json<Value>) -> impl IntoResponse {
+    let payload = with_auth_from_headers(payload, &headers);
     match parse_request_envelope(payload) {
         Ok(envelope) => {
             let semantic_errors = validate_request_envelope(&envelope);
@@ -192,7 +194,12 @@ fn render_validation_error(error: &RequestValidationError) -> String {
     format!("{}: {}", error.field, error.message)
 }
 
-async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Value>) -> impl IntoResponse {
+async fn post_actions_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let payload = with_auth_from_headers(payload, &headers);
     let envelope = match parse_request_envelope(payload) {
         Ok(value) => value,
         Err(err) => return bad_request("validation_failed", "request parsing failed", vec![format!("payload: {err}")]).into_response(),
@@ -211,12 +218,11 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
     }
 
     let run_id = format!("run_{}", envelope.request_id);
-    let admission = PolicyAdmission::new(
+    let admission = PolicyAdmission::from_auth_context(
         format!("adm_{}", envelope.request_id),
         envelope.action.action_id.clone(),
-        AdmissionDecision::Allow,
-        "ok".to_string(),
         "policy.default.v0".to_string(),
+        envelope.auth_context.clone(),
     );
 
     let _plan = FlatExecutionPlan::from_action(run_id.clone(), envelope.action.action_id.clone());
@@ -265,6 +271,53 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
         }),
     )
         .into_response()
+}
+
+fn with_auth_from_headers(mut payload: Value, headers: &HeaderMap) -> Value {
+    if let Some(obj) = payload.as_object_mut() {
+        if obj.get("auth_context").is_none() {
+            if let Some(auth_context) = auth_context_from_headers(headers) {
+                obj.insert("auth_context".to_string(), serde_json::to_value(auth_context).expect("auth context to serialize"));
+            }
+        }
+    }
+    payload
+}
+
+fn auth_context_from_headers(headers: &HeaderMap) -> Option<AuthContext> {
+    let mode = header_value(headers, "x-mova-auth-mode");
+    let actor_id = header_value(headers, "x-mova-actor-id");
+    let token_ref = header_value(headers, "x-mova-token-ref");
+    let source = header_value(headers, "x-mova-auth-source").or_else(|| mode.as_ref().map(|_| "header".to_string()));
+    let scopes = header_value(headers, "x-mova-scopes")
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if mode.is_none() && actor_id.is_none() && token_ref.is_none() && source.is_none() && scopes.is_empty() {
+        return None;
+    }
+
+    Some(AuthContext {
+        mode: mode.unwrap_or_else(|| "placeholder".to_string()),
+        actor_id,
+        token_ref,
+        scopes,
+        source,
+        verified: false,
+    })
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {

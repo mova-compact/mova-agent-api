@@ -41,6 +41,37 @@ paths:
     post:
       summary: Validate action request envelope without execution
       operationId: validateAction
+      parameters:
+        - name: x-mova-auth-mode
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional placeholder auth mode metadata forwarded to policy input.
+        - name: x-mova-actor-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional actor identifier metadata forwarded to policy input.
+        - name: x-mova-token-ref
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional token reference metadata (no token verification in V0).
+        - name: x-mova-scopes
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional comma-separated scope hints forwarded to policy input.
+        - name: x-mova-auth-source
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional auth metadata source tag, for example `header`.
       requestBody:
         required: true
         content:
@@ -74,6 +105,37 @@ paths:
     post:
       summary: Run a single admitted action via flat path
       operationId: runAction
+      parameters:
+        - name: x-mova-auth-mode
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional placeholder auth mode metadata forwarded to policy input.
+        - name: x-mova-actor-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional actor identifier metadata forwarded to policy input.
+        - name: x-mova-token-ref
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional token reference metadata (no token verification in V0).
+        - name: x-mova-scopes
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional comma-separated scope hints forwarded to policy input.
+        - name: x-mova-auth-source
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional auth metadata source tag, for example `header`.
       requestBody:
         required: true
         content:
@@ -242,6 +304,8 @@ components:
               type: string
             client_id:
               type: string
+        auth_context:
+          $ref: "#/components/schemas/AuthContext"
         action:
           $ref: "#/components/schemas/Action"
         inputs:
@@ -271,6 +335,30 @@ components:
           type: string
         reason_code:
           type: string
+    AuthContext:
+      type: object
+      additionalProperties: false
+      required:
+        - mode
+        - scopes
+        - verified
+      properties:
+        mode:
+          type: string
+        actor_id:
+          type: string
+        token_ref:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        source:
+          type: string
+        verified:
+          type: boolean
+          enum:
+            - false
     EvidenceResponse:
       type: object
       additionalProperties: false

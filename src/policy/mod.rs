@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::request::AuthContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +35,7 @@ pub struct PolicyAdmission {
     pub constraints: Value,
     pub allowed_scopes: Vec<String>,
     pub blocked_scopes: Vec<String>,
+    pub auth_context: AuthContext,
 }
 
 impl PolicyAdmission {
@@ -53,6 +55,37 @@ impl PolicyAdmission {
             constraints: Value::Object(Default::default()),
             allowed_scopes: Vec::new(),
             blocked_scopes: Vec::new(),
+            auth_context: placeholder_auth_context(None),
+        }
+    }
+
+    pub fn from_auth_context(
+        admission_id: String,
+        action_id: String,
+        policy_version: String,
+        auth_context: Option<AuthContext>,
+    ) -> Self {
+        let normalized = placeholder_auth_context(auth_context);
+        let reason_code = if normalized.source.as_deref() == Some("header") {
+            "ok_auth_placeholder_header"
+        } else if normalized.source.as_deref() == Some("request") {
+            "ok_auth_placeholder_request"
+        } else {
+            "ok_auth_placeholder_none"
+        };
+
+        Self {
+            admission_id,
+            action_id,
+            decision: AdmissionDecision::Allow,
+            reason_code: reason_code.to_string(),
+            policy_version,
+            constraints: serde_json::json!({
+                "auth_context": normalized.clone()
+            }),
+            allowed_scopes: normalized.scopes.clone(),
+            blocked_scopes: Vec::new(),
+            auth_context: normalized,
         }
     }
 
@@ -62,6 +95,31 @@ impl PolicyAdmission {
             policy_version: self.policy_version.clone(),
             reason_code: self.reason_code.clone(),
         }
+    }
+}
+
+fn placeholder_auth_context(auth_context: Option<AuthContext>) -> AuthContext {
+    match auth_context {
+        Some(context) => AuthContext {
+            mode: if context.mode.trim().is_empty() {
+                "placeholder".to_string()
+            } else {
+                context.mode
+            },
+            actor_id: context.actor_id,
+            token_ref: context.token_ref,
+            scopes: context.scopes,
+            source: context.source,
+            verified: false,
+        },
+        None => AuthContext {
+            mode: "placeholder".to_string(),
+            actor_id: None,
+            token_ref: None,
+            scopes: Vec::new(),
+            source: None,
+            verified: false,
+        },
     }
 }
 
@@ -87,6 +145,8 @@ mod tests {
         assert_eq!(admission.allowed_scopes, Vec::<String>::new());
         assert_eq!(admission.blocked_scopes, Vec::<String>::new());
         assert_eq!(admission.constraints, Value::Object(Default::default()));
+        assert_eq!(admission.auth_context.mode, "placeholder");
+        assert!(!admission.auth_context.verified);
     }
 
     #[test]
@@ -100,6 +160,14 @@ mod tests {
             constraints: serde_json::json!({ "max_tokens": 1024 }),
             allowed_scopes: vec!["connector.docs.v1".to_string()],
             blocked_scopes: vec!["connector.ext.v1".to_string()],
+            auth_context: AuthContext {
+                mode: "placeholder".to_string(),
+                actor_id: Some("agent_001".to_string()),
+                token_ref: Some("token:ref:01".to_string()),
+                scopes: vec!["actions.run".to_string()],
+                source: Some("request".to_string()),
+                verified: false,
+            },
         };
 
         let summary = admission.to_summary();
@@ -113,5 +181,26 @@ mod tests {
         let serialized = serde_json::to_string(&AdmissionDecision::RequireReview).unwrap();
         assert_eq!(serialized, "\"require_review\"");
     }
-}
 
+    #[test]
+    fn policy_admission_from_auth_context_normalizes_to_placeholder_mode() {
+        let admission = PolicyAdmission::from_auth_context(
+            "adm_03".to_string(),
+            "act_03".to_string(),
+            "policy.default.v0".to_string(),
+            Some(AuthContext {
+                mode: "".to_string(),
+                actor_id: Some("agent_001".to_string()),
+                token_ref: Some("token:ref:02".to_string()),
+                scopes: vec!["actions.validate".to_string()],
+                source: Some("header".to_string()),
+                verified: true,
+            }),
+        );
+
+        assert_eq!(admission.auth_context.mode, "placeholder");
+        assert!(!admission.auth_context.verified);
+        assert_eq!(admission.reason_code, "ok_auth_placeholder_header");
+        assert_eq!(admission.allowed_scopes, vec!["actions.validate"]);
+    }
+}

@@ -56,6 +56,44 @@
         }
       }
     },
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "scopes",
+        "verified"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verified": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
     "action": {
       "$ref": "./action.schema.json"
     },
@@ -106,4 +144,3 @@
     }
   }
 }
-

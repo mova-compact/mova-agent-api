@@ -150,6 +150,82 @@ async fn post_actions_run_creates_deterministic_run() {
 }
 
 #[tokio::test]
+async fn post_actions_run_without_auth_headers_stays_placeholder_deterministic() {
+    let app = router();
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::ACCEPTED);
+
+    let evidence_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence_response.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(
+        evidence_json["policy_summary"]["reason_code"],
+        "ok_auth_placeholder_none"
+    );
+}
+
+#[tokio::test]
+async fn post_actions_run_passes_header_auth_metadata_into_policy_input() {
+    let app = router();
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .header("x-mova-auth-mode", "placeholder")
+                .header("x-mova-actor-id", "agent_header_01")
+                .header("x-mova-token-ref", "token:header:01")
+                .header("x-mova-scopes", "actions.run,actions.validate")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::ACCEPTED);
+
+    let evidence_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence_response.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(
+        evidence_json["policy_summary"]["reason_code"],
+        "ok_auth_placeholder_header"
+    );
+}
+
+#[tokio::test]
 async fn get_run_returns_status_for_created_run() {
     let app = router();
     let _ = app

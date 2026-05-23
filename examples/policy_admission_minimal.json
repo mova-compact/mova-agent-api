@@ -6,6 +6,10 @@
   "policy_version": "policy.default.v0",
   "constraints": {},
   "allowed_scopes": [],
-  "blocked_scopes": []
+  "blocked_scopes": [],
+  "auth_context": {
+    "mode": "placeholder",
+    "scopes": [],
+    "verified": false
+  }
 }
-

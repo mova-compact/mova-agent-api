@@ -25,6 +25,44 @@ async fn http_transport_cannot_bypass_request_validation() {
 }
 
 #[tokio::test]
+async fn http_transport_does_not_enforce_production_auth() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "request_id": "req_auth_boundary_01",
+                        "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
+                        "source": {"channel": "api", "client_id": "client_001"},
+                        "action": {
+                            "action_id": "act_auth_boundary_01",
+                            "action_type": "validate_document",
+                            "target_kind": "document",
+                            "input_payload": {"document_id": "doc_01"},
+                            "policy_context": {"policy_profile_ref": "policy.default.v0"},
+                            "connector_context": {"connector_set": ["connector.docs.v1"]},
+                            "trace_ref": "trace:req_auth_boundary_01"
+                        },
+                        "inputs": {"document_id": "doc_01"},
+                        "context": {"tenant_id": "tenant_001"},
+                        "correlation": {"trace_id": "trace_boundary"},
+                        "timestamps": {"requested_at": "2026-05-23T11:00:00Z"}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
 async fn actions_run_rejects_invalid_action_input_selector() {
     let app = router();
     let response = app
@@ -112,4 +150,3 @@ fn request_module_enforces_semantic_validation_locally() {
     let errors = validate_request_envelope(&parsed);
     assert!(errors.iter().any(|e| e.field == "action"));
 }
-
