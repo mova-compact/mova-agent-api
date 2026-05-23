@@ -9,14 +9,16 @@
     "adapter_kind",
     "allowed_connectors",
     "allowed_side_effect_intents",
-    "offline_stub_rules"
+    "offline_stub_rules",
+    "allowed_webhook_urls"
   ],
   "properties": {
     "adapter_kind": {
       "type": "string",
       "enum": [
         "deterministic_local",
-        "offline_stub"
+        "offline_stub",
+        "webhook_site"
       ]
     },
     "allowed_connectors": {
@@ -68,6 +70,13 @@
             "minLength": 1
           }
         }
+      }
+    },
+    "allowed_webhook_urls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
       }
     }
   }

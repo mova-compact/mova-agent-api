@@ -417,16 +417,27 @@ async fn post_actions_run(
             }
         }
     }
+    let connector_request = envelope.action.input_payload.clone().unwrap_or_else(|| json!({}));
     let connector_call = match state.connector_executor.execute(ConnectorExecutionRequest {
         connector_id,
         call_id: format!("call_{}", envelope.request_id),
         side_effect_intent,
-        request: redact_json(&envelope.action.input_payload.clone().unwrap_or_else(|| json!({}))),
+        request: redact_json(&json!({
+            "target_url": connector_request.get("target_url").cloned().unwrap_or(Value::Null),
+            "run_id": run_id.clone(),
+            "correlation_id": envelope
+                .correlation
+                .get("correlation_id")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "trace_ref": envelope.action.trace_ref.clone(),
+            "input": connector_request
+        })),
         auth_context: redact_json(&serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({}))),
         credential_refs,
         policy_result: admission.to_summary(),
         started_at: "2026-05-23T10:30:00Z".to_string(),
-    }) {
+    }).await {
         Ok(result) => result.call,
         Err(err) => return connector_unavailable(&err).into_response(),
     };

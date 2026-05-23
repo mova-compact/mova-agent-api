@@ -25,6 +25,7 @@
       "none",
       "local_only"
     ],
-    "offline_stub_rules": []
+    "offline_stub_rules": [],
+    "allowed_webhook_urls": []
   }
 }

@@ -127,6 +127,24 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
         if let Ok(value) = std::env::var("MOVA_CONNECTOR_ADAPTER_KIND") {
             cfg.connectors.adapter_kind = value;
         }
+        if let Ok(value) = std::env::var("MOVA_WEBHOOK_SITE_ALLOWED_URL") {
+            cfg.connectors.allowed_webhook_urls = vec![value];
+        }
+        if cfg.connectors.adapter_kind == "webhook_site" {
+            if cfg.connectors.allowed_connectors.is_empty() {
+                cfg.connectors.allowed_connectors = vec!["connector.webhook_site.v1".to_string()];
+            }
+            if cfg
+                .connectors
+                .allowed_side_effect_intents
+                .iter()
+                .all(|i| *i != crate::connectors::SideEffectIntent::ExternalNetwork)
+            {
+                cfg.connectors
+                    .allowed_side_effect_intents
+                    .push(crate::connectors::SideEffectIntent::ExternalNetwork);
+            }
+        }
 
         cfg.validate()?;
         Ok(cfg)

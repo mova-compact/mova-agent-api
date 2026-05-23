@@ -8,8 +8,8 @@ use mova_agent_api::policy::{AdmissionDecision, PolicyAdmission};
 use mova_agent_api::request::parse_request_envelope;
 use mova_agent_api::secrets::{SecretRef, SecretRefKind};
 
-#[test]
-fn vertical_smoke_single_action_path() {
+#[tokio::test]
+async fn vertical_smoke_single_action_path() {
     let request_json = serde_json::json!({
         "request_id": "req_01",
         "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
@@ -58,6 +58,7 @@ fn vertical_smoke_single_action_path() {
             policy_result: admission.to_summary(),
             started_at: "2026-05-23T09:30:00Z".to_string(),
         })
+        .await
         .unwrap()
         .call;
     assert_eq!(connector_call.connector_id, "connector.docs.v1");
