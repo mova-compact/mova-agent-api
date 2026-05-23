@@ -23,6 +23,7 @@ paths:
                   - action_types
                   - policy_decisions
                   - execution_path
+                  - runtime_provider
                 properties:
                   action_types:
                     type: array
@@ -37,6 +38,8 @@ paths:
                     items:
                       type: string
                     minItems: 7
+                  runtime_provider:
+                    $ref: "#/components/schemas/RuntimeProviderCapabilities"
   /actions/validate:
     post:
       summary: Validate action request envelope without execution
@@ -192,7 +195,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "502":
-          description: Connector execution failure
+          description: Connector execution failure or runtime secret resolution failure
           content:
             application/json:
               schema:
@@ -461,3 +464,20 @@ components:
       properties:
         error:
           $ref: "#/components/schemas/Error"
+    RuntimeProviderCapabilities:
+      type: object
+      additionalProperties: false
+      required:
+        - provider_kind
+        - supports_env_loading
+        - supports_secret_resolution
+        - supports_live_deploy_binding
+      properties:
+        provider_kind:
+          type: string
+        supports_env_loading:
+          type: boolean
+        supports_secret_resolution:
+          type: boolean
+        supports_live_deploy_binding:
+          type: boolean

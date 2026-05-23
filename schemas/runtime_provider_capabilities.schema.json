@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/runtime_provider_capabilities.schema.json",
+  "title": "MOVA Agent API V0 Runtime Provider Capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider_kind",
+    "supports_env_loading",
+    "supports_secret_resolution",
+    "supports_live_deploy_binding"
+  ],
+  "properties": {
+    "provider_kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supports_env_loading": {
+      "type": "boolean"
+    },
+    "supports_secret_resolution": {
+      "type": "boolean"
+    },
+    "supports_live_deploy_binding": {
+      "type": "boolean"
+    }
+  }
+}

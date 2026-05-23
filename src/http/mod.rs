@@ -11,7 +11,10 @@ use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
-use crate::runtime::RuntimeConfig;
+use crate::runtime::{
+    LocalEnvRuntimeProvider, LocalEnvSecretResolver, RuntimeProvider, RuntimeProviderCapabilities,
+    SecretResolver,
+};
 use crate::secrets::{redact_json, redact_text, SecretRef, SecretRefKind};
 use crate::auth::{create_auth_verifier, AuthVerifier};
 use crate::storage::{create_run_store, RunSnapshot, RunStore, StorageConfig, StorageError};
@@ -42,6 +45,8 @@ pub struct AppState {
     run_store: Arc<dyn RunStore>,
     auth_verifier: Arc<dyn AuthVerifier>,
     connector_executor: Arc<dyn ConnectorExecutor>,
+    secret_resolver: Arc<dyn SecretResolver>,
+    runtime_provider_capabilities: RuntimeProviderCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +54,7 @@ struct CapabilitiesResponse {
     action_types: Vec<String>,
     policy_decisions: Vec<String>,
     execution_path: Vec<String>,
+    runtime_provider: RuntimeProviderCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,15 +106,21 @@ pub fn router_with_state(state: AppState) -> Router {
 
 impl AppState {
     pub fn new() -> Self {
-        let runtime = RuntimeConfig::deterministic_local_default();
+        let provider = LocalEnvRuntimeProvider::new(crate::runtime::RuntimeConfig::deterministic_local_default());
+        let runtime = provider
+            .load_runtime_config()
+            .unwrap_or_else(|_| crate::runtime::RuntimeConfig::deterministic_local_default());
         let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&runtime.auth));
         let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&runtime.storage));
         let connector_executor: Arc<dyn ConnectorExecutor> =
             Arc::from(create_connector_executor(&runtime.connectors));
+        let secret_resolver: Arc<dyn SecretResolver> = Arc::new(LocalEnvSecretResolver::default());
         Self {
             run_store,
             auth_verifier: verifier,
             connector_executor,
+            secret_resolver,
+            runtime_provider_capabilities: provider.capabilities(),
         }
     }
 
@@ -118,10 +130,18 @@ impl AppState {
         let connector_config = ConnectorExecutionConfig::deterministic_local_default();
         let connector_executor: Arc<dyn ConnectorExecutor> =
             Arc::from(create_connector_executor(&connector_config));
+        let secret_resolver: Arc<dyn SecretResolver> = Arc::new(LocalEnvSecretResolver::default());
         Self {
             run_store,
             auth_verifier,
             connector_executor,
+            secret_resolver,
+            runtime_provider_capabilities: RuntimeProviderCapabilities {
+                provider_kind: "local_test".to_string(),
+                supports_env_loading: false,
+                supports_secret_resolution: true,
+                supports_live_deploy_binding: false,
+            },
         }
     }
 
@@ -129,10 +149,18 @@ impl AppState {
         let connector_config = ConnectorExecutionConfig::deterministic_local_default();
         let connector_executor: Arc<dyn ConnectorExecutor> =
             Arc::from(create_connector_executor(&connector_config));
+        let secret_resolver: Arc<dyn SecretResolver> = Arc::new(LocalEnvSecretResolver::default());
         Self {
             run_store,
             auth_verifier,
             connector_executor,
+            secret_resolver,
+            runtime_provider_capabilities: RuntimeProviderCapabilities {
+                provider_kind: "local_test".to_string(),
+                supports_env_loading: false,
+                supports_secret_resolution: true,
+                supports_live_deploy_binding: false,
+            },
         }
     }
 
@@ -141,10 +169,38 @@ impl AppState {
         run_store: Arc<dyn RunStore>,
         connector_executor: Arc<dyn ConnectorExecutor>,
     ) -> Self {
+        let secret_resolver: Arc<dyn SecretResolver> = Arc::new(LocalEnvSecretResolver::default());
         Self {
             run_store,
             auth_verifier,
             connector_executor,
+            secret_resolver,
+            runtime_provider_capabilities: RuntimeProviderCapabilities {
+                provider_kind: "custom".to_string(),
+                supports_env_loading: false,
+                supports_secret_resolution: true,
+                supports_live_deploy_binding: false,
+            },
+        }
+    }
+
+    pub fn with_runtime_boundaries(
+        auth_verifier: Arc<dyn AuthVerifier>,
+        run_store: Arc<dyn RunStore>,
+        connector_executor: Arc<dyn ConnectorExecutor>,
+        secret_resolver: Arc<dyn SecretResolver>,
+    ) -> Self {
+        Self {
+            run_store,
+            auth_verifier,
+            connector_executor,
+            secret_resolver,
+            runtime_provider_capabilities: RuntimeProviderCapabilities {
+                provider_kind: "custom".to_string(),
+                supports_env_loading: false,
+                supports_secret_resolution: true,
+                supports_live_deploy_binding: false,
+            },
         }
     }
 
@@ -160,7 +216,7 @@ pub fn auth_placeholder() -> AuthPlaceholder {
     }
 }
 
-async fn get_capabilities() -> Json<CapabilitiesResponse> {
+async fn get_capabilities(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
     Json(CapabilitiesResponse {
         action_types: vec!["validate_document".to_string()],
         policy_decisions: vec![
@@ -178,6 +234,7 @@ async fn get_capabilities() -> Json<CapabilitiesResponse> {
             "observation_write".to_string(),
             "evidence_response".to_string(),
         ],
+        runtime_provider: state.runtime_provider_capabilities.clone(),
     })
 }
 
@@ -273,6 +330,19 @@ fn connector_unavailable(err: &ConnectorExecutionError) -> (StatusCode, Json<Err
     )
 }
 
+fn runtime_secret_unavailable(message: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorResponse {
+            error: ApiError {
+                code: "runtime_secret_resolution_failed".to_string(),
+                message: "runtime secret resolution failed".to_string(),
+                details: vec![format!("resolution: {}", redact_text(message))],
+            },
+        }),
+    )
+}
+
 fn render_validation_error(error: &RequestValidationError) -> String {
     format!("{}: {}", error.field, error.message)
 }
@@ -336,13 +406,24 @@ async fn post_actions_run(
         .to_string();
     let side_effect_intent = parse_side_effect_intent(&envelope.action.connector_context)
         .unwrap_or(SideEffectIntent::None);
+    let credential_refs = extract_credential_refs(&envelope.action.connector_context);
+    let mut resolved_ref_count: u64 = 0;
+    for secret_ref in &credential_refs {
+        match state.secret_resolver.resolve(secret_ref) {
+            Ok(Some(_)) => resolved_ref_count += 1,
+            Ok(None) => {}
+            Err(err) => {
+                return runtime_secret_unavailable(&err.message).into_response();
+            }
+        }
+    }
     let connector_call = match state.connector_executor.execute(ConnectorExecutionRequest {
         connector_id,
         call_id: format!("call_{}", envelope.request_id),
         side_effect_intent,
         request: redact_json(&envelope.action.input_payload.clone().unwrap_or_else(|| json!({}))),
         auth_context: redact_json(&serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({}))),
-        credential_refs: extract_credential_refs(&envelope.action.connector_context),
+        credential_refs,
         policy_result: admission.to_summary(),
         started_at: "2026-05-23T10:30:00Z".to_string(),
     }) {
@@ -371,7 +452,8 @@ async fn post_actions_run(
                 .response
                 .get("credential_ref_count")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            "resolved_ref_count": resolved_ref_count
         }),
         evidence_ref: format!("ev_{}", envelope.request_id),
     });

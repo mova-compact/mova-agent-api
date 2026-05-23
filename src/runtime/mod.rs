@@ -2,8 +2,10 @@
 
 use crate::auth::AuthTrustConfig;
 use crate::connectors::ConnectorExecutionConfig;
+use crate::secrets::{SecretBoundaryError, SecretRef, SecretRefKind};
 use crate::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -72,6 +74,125 @@ impl RuntimeConfigLoader for StaticRuntimeConfigLoader {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProviderCapabilities {
+    pub provider_kind: String,
+    pub supports_env_loading: bool,
+    pub supports_secret_resolution: bool,
+    pub supports_live_deploy_binding: bool,
+}
+
+pub trait SecretResolver: Send + Sync {
+    fn resolve(&self, reference: &SecretRef) -> Result<Option<String>, SecretBoundaryError>;
+}
+
+pub trait RuntimeProvider: Send + Sync {
+    fn capabilities(&self) -> RuntimeProviderCapabilities;
+    fn load_runtime_config(&self) -> Result<RuntimeConfig, RuntimeConfigError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalEnvRuntimeProvider {
+    defaults: RuntimeConfig,
+}
+
+impl LocalEnvRuntimeProvider {
+    pub fn new(defaults: RuntimeConfig) -> Self {
+        Self { defaults }
+    }
+}
+
+impl RuntimeProvider for LocalEnvRuntimeProvider {
+    fn capabilities(&self) -> RuntimeProviderCapabilities {
+        RuntimeProviderCapabilities {
+            provider_kind: "local_env".to_string(),
+            supports_env_loading: true,
+            supports_secret_resolution: true,
+            supports_live_deploy_binding: false,
+        }
+    }
+
+    fn load_runtime_config(&self) -> Result<RuntimeConfig, RuntimeConfigError> {
+        let mut cfg = self.defaults.clone();
+
+        if let Ok(value) = std::env::var("MOVA_AUTH_VERIFIER_KIND") {
+            cfg.auth.verifier_kind = value;
+        }
+        if let Ok(value) = std::env::var("MOVA_STORAGE_ADAPTER_KIND") {
+            cfg.storage.adapter_kind = value;
+        }
+        if let Ok(value) = std::env::var("MOVA_STORAGE_BASE_PATH") {
+            cfg.storage.base_path = Some(value);
+        }
+        if let Ok(value) = std::env::var("MOVA_CONNECTOR_ADAPTER_KIND") {
+            cfg.connectors.adapter_kind = value;
+        }
+
+        cfg.validate()?;
+        Ok(cfg)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalEnvSecretResolver {
+    runtime_secrets: HashMap<String, String>,
+}
+
+impl LocalEnvSecretResolver {
+    pub fn new(runtime_secrets: HashMap<String, String>) -> Self {
+        Self { runtime_secrets }
+    }
+}
+
+impl SecretResolver for LocalEnvSecretResolver {
+    fn resolve(&self, reference: &SecretRef) -> Result<Option<String>, SecretBoundaryError> {
+        reference.validate()?;
+        match reference.kind {
+            SecretRefKind::SecretRef => Ok(None),
+            SecretRefKind::EnvRef => {
+                let key = reference
+                    .reference
+                    .strip_prefix("env://")
+                    .unwrap_or(&reference.reference);
+                Ok(std::env::var(key).ok())
+            }
+            SecretRefKind::RuntimeSecret => {
+                let key = reference
+                    .reference
+                    .strip_prefix("runtime://")
+                    .unwrap_or(&reference.reference);
+                Ok(self.runtime_secrets.get(key).cloned())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FailingRuntimeProvider {
+    err: RuntimeConfigError,
+}
+
+impl FailingRuntimeProvider {
+    pub fn new(err: RuntimeConfigError) -> Self {
+        Self { err }
+    }
+}
+
+impl RuntimeProvider for FailingRuntimeProvider {
+    fn capabilities(&self) -> RuntimeProviderCapabilities {
+        RuntimeProviderCapabilities {
+            provider_kind: "failing".to_string(),
+            supports_env_loading: false,
+            supports_secret_resolution: false,
+            supports_live_deploy_binding: false,
+        }
+    }
+
+    fn load_runtime_config(&self) -> Result<RuntimeConfig, RuntimeConfigError> {
+        Err(self.err.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +209,28 @@ mod tests {
         cfg.storage.adapter_kind = "unsupported".to_string();
         let err = cfg.validate().unwrap_err();
         assert_eq!(err.code, "storage_config_invalid");
+    }
+
+    #[test]
+    fn local_env_provider_capabilities_are_provider_safe() {
+        let provider = LocalEnvRuntimeProvider::new(RuntimeConfig::deterministic_local_default());
+        let capabilities = provider.capabilities();
+        assert_eq!(capabilities.provider_kind, "local_env");
+        assert!(!capabilities.supports_live_deploy_binding);
+    }
+
+    #[test]
+    fn local_env_secret_resolver_supports_runtime_secret_kind() {
+        let resolver = LocalEnvSecretResolver::new(HashMap::from([(
+            "connector/docs".to_string(),
+            "local-secret".to_string(),
+        )]));
+        let resolved = resolver
+            .resolve(&SecretRef {
+                kind: SecretRefKind::RuntimeSecret,
+                reference: "runtime://connector/docs".to_string(),
+            })
+            .unwrap();
+        assert_eq!(resolved.as_deref(), Some("local-secret"));
     }
 }

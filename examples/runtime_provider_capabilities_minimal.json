@@ -1,0 +1,6 @@
+{
+  "provider_kind": "local_env",
+  "supports_env_loading": true,
+  "supports_secret_resolution": true,
+  "supports_live_deploy_binding": false
+}

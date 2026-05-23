@@ -3,10 +3,24 @@ use axum::http::{Method, Request, StatusCode};
 use mova_agent_api::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
 use mova_agent_api::connectors::{ConnectorExecutionError, ConnectorExecutor, FailingConnectorExecutor};
 use mova_agent_api::http::{router, router_with_state, AppState};
+use mova_agent_api::runtime::SecretResolver;
+use mova_agent_api::secrets::{SecretBoundaryError, SecretRef};
 use mova_agent_api::storage::{create_run_store, FailingRunStore, RunStore, StorageConfig, StorageError};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+#[derive(Debug, Default)]
+struct FailingSecretResolver;
+
+impl SecretResolver for FailingSecretResolver {
+    fn resolve(&self, _reference: &SecretRef) -> Result<Option<String>, SecretBoundaryError> {
+        Err(SecretBoundaryError::new(
+            "secret_resolution_failed",
+            "runtime_secret unavailable",
+        ))
+    }
+}
 
 fn minimal_request_body() -> String {
     serde_json::json!({
@@ -106,6 +120,7 @@ async fn get_capabilities_returns_v0_metadata() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert!(json["action_types"].is_array());
     assert!(json["policy_decisions"].is_array());
+    assert_eq!(json["runtime_provider"]["provider_kind"], "local_env");
     assert_eq!(
         json["execution_path"],
         serde_json::json!([
@@ -342,6 +357,40 @@ async fn post_actions_run_returns_bad_gateway_on_connector_failure() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"]["code"], "connector_execution_failed");
+}
+
+#[tokio::test]
+async fn post_actions_run_returns_bad_gateway_on_secret_resolution_failure() {
+    let auth_verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&AuthTrustConfig::default_v0()));
+    let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&StorageConfig::in_memory_default()));
+    let connector_exec: Arc<dyn ConnectorExecutor> =
+        Arc::new(FailingConnectorExecutor::new(ConnectorExecutionError::new(
+            "connector_runtime_not_reached",
+            "should not execute when secret resolution fails",
+        )));
+    let failing_resolver: Arc<dyn SecretResolver> = Arc::new(FailingSecretResolver);
+    let app = router_with_state(AppState::with_runtime_boundaries(
+        auth_verifier,
+        run_store,
+        connector_exec,
+        failing_resolver,
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "runtime_secret_resolution_failed");
 }
 
 #[tokio::test]

@@ -1,4 +1,7 @@
-use mova_agent_api::runtime::{RuntimeConfig, RuntimeConfigLoader, StaticRuntimeConfigLoader};
+use mova_agent_api::runtime::{
+    LocalEnvRuntimeProvider, RuntimeConfig, RuntimeConfigLoader, RuntimeProvider,
+    StaticRuntimeConfigLoader,
+};
 use mova_agent_api::secrets::{redact_json, SecretRef, SecretRefKind};
 
 #[test]
@@ -43,4 +46,23 @@ fn secret_redaction_removes_sensitive_fields() {
     assert_eq!(redacted["runtime_secret"], "[REDACTED]");
     assert_eq!(redacted["nested"]["credential"], "[REDACTED]");
     assert_eq!(redacted["safe"], "x");
+}
+
+#[test]
+fn runtime_provider_capability_model_is_explicit() {
+    let provider = LocalEnvRuntimeProvider::new(RuntimeConfig::deterministic_local_default());
+    let caps = provider.capabilities();
+    assert_eq!(caps.provider_kind, "local_env");
+    assert!(caps.supports_env_loading);
+    assert!(!caps.supports_live_deploy_binding);
+}
+
+#[test]
+fn local_env_provider_respects_env_override() {
+    let key = "MOVA_STORAGE_ADAPTER_KIND";
+    std::env::set_var(key, "in_memory");
+    let provider = LocalEnvRuntimeProvider::new(RuntimeConfig::deterministic_local_default());
+    let loaded = provider.load_runtime_config().unwrap();
+    assert_eq!(loaded.storage.adapter_kind, "in_memory");
+    std::env::remove_var(key);
 }
