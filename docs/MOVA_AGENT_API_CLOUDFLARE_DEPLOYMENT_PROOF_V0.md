@@ -181,6 +181,24 @@ Universal HTTP connector smoke:
 - External receipt confirmation:
   - webhook response preview returned from Webhook.site (`http_status=200`) with matching run trace/correlation context in evidence.
 
+Endpoint registry governance smoke:
+
+- Runtime registry configured via:
+  - `MOVA_HTTP_ENDPOINT_REGISTRY_JSON` with multiple entries:
+    - `webhook_site_test` (`enabled=true`)
+    - `webhook_site_disabled` (`enabled=false`)
+- Enabled endpoint smoke:
+  - `scripts/smoke_public_api.ps1` run with `EndpointRef=webhook_site_test`
+  - result: `POST /actions/run` completed; cross-request run/evidence lookup succeeded.
+  - evidence includes governance metadata:
+    - `endpoint_ref=webhook_site_test`
+    - `evidence_policy=summary_only`
+    - endpoint-local `timeout_ms` / `max_retries`
+- Disabled endpoint smoke:
+  - `POST /actions/run` with `endpoint_ref=webhook_site_disabled`
+  - result: deterministic denial (`HTTP 502`, `connector_code: endpoint_disabled`)
+  - confirms per-endpoint governance enforcement.
+
 Operational hardening smoke:
 
 - `GET /health` -> `status=ok`
