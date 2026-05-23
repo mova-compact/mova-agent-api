@@ -9,6 +9,8 @@ use crate::policy::PolicySummary;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const CONNECTOR_SIDE_EFFECTS_ENABLED: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorCallStatus {
@@ -60,6 +62,10 @@ pub fn build_connector_call(
     }
 }
 
+pub fn connector_side_effects_enabled() -> bool {
+    CONNECTOR_SIDE_EFFECTS_ENABLED
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,4 +99,3 @@ mod tests {
         assert_eq!(value, "\"completed\"");
     }
 }
-

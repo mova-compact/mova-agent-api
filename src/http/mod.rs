@@ -18,6 +18,17 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionMode {
+    InMemoryOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthPlaceholder {
+    pub auth_mode: String,
+    pub enforced: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     runs: Arc<Mutex<HashMap<String, RunSnapshot>>>,
@@ -88,6 +99,17 @@ impl AppState {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn retention_mode(&self) -> RetentionMode {
+        RetentionMode::InMemoryOnly
+    }
+}
+
+pub fn auth_placeholder() -> AuthPlaceholder {
+    AuthPlaceholder {
+        auth_mode: "placeholder".to_string(),
+        enforced: false,
     }
 }
 
