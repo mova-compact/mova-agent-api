@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "description": "operator_terminal_smoke_v0 deterministic terminal smoke flow",
+  "entry": "start",
+  "steps": [
+    {
+      "id": "start",
+      "execution_mode": "DETERMINISTIC",
+      "next": {
+        "default": {
+          "terminal": "completed"
+        }
+      }
+    }
+  ]
+}
