@@ -26,6 +26,29 @@ fn minimal_request_body() -> String {
     .to_string()
 }
 
+fn invalid_dual_input_request_body() -> String {
+    serde_json::json!({
+        "request_id": "req_http_dual_01",
+        "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
+        "source": {"channel": "api", "client_id": "client_001"},
+        "action": {
+            "action_id": "act_dual_01",
+            "action_type": "validate_document",
+            "target_kind": "document",
+            "input_ref": "input://doc/123",
+            "input_payload": {"document_id": "doc_123"},
+            "policy_context": {"policy_profile_ref": "policy.default.v0"},
+            "connector_context": {"connector_set": ["connector.docs.v1"]},
+            "trace_ref": "trace:req_http_dual_01"
+        },
+        "inputs": {"document_id": "doc_123"},
+        "context": {"tenant_id": "tenant_001"},
+        "correlation": {"trace_id": "trace_abc123"},
+        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
+    })
+    .to_string()
+}
+
 #[tokio::test]
 async fn get_capabilities_returns_v0_metadata() {
     let app = router();
@@ -185,6 +208,26 @@ async fn get_run_evidence_returns_evidence_for_created_run() {
 }
 
 #[tokio::test]
+async fn get_run_evidence_returns_not_found_error_shape() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_missing/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "run_not_found");
+}
+
+#[tokio::test]
 async fn get_run_returns_not_found_error_shape() {
     let app = router();
     let response = app
@@ -214,6 +257,27 @@ async fn post_actions_run_returns_validation_error_shape() {
                 .uri("/actions/run")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"request_id":"req_bad"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "validation_failed");
+}
+
+#[tokio::test]
+async fn post_actions_validate_returns_semantic_validation_error_shape() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/validate")
+                .header("content-type", "application/json")
+                .body(Body::from(invalid_dual_input_request_body()))
                 .unwrap(),
         )
         .await
