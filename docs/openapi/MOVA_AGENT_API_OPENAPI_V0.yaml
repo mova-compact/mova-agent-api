@@ -120,6 +120,11 @@ paths:
                   source:
                     channel: api
                     client_id: client_001
+                  auth_context:
+                    mode: placeholder
+                    scopes: [actions.run]
+                    source: example
+                    verified: false
                   action:
                     action_id: act_http_generic_01
                     action_type: webhook_notify

@@ -92,7 +92,12 @@
           "endpoint_ref",
           "url",
           "allowed_methods",
-          "allowed_side_effect_intents"
+          "allowed_side_effect_intents",
+          "required_scopes",
+          "timeout_ms",
+          "max_retries",
+          "evidence_policy",
+          "enabled"
         ],
         "properties": {
           "endpoint_ref": {
@@ -126,6 +131,35 @@
               ]
             },
             "minItems": 1
+          },
+          "required_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120000
+          },
+          "max_retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "evidence_policy": {
+            "type": "string",
+            "enum": [
+              "summary_only",
+              "headers_redacted",
+              "body_redacted",
+              "status_only"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
           }
         }
       }

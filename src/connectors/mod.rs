@@ -92,6 +92,20 @@ pub struct EndpointRegistryEntry {
     pub url: String,
     pub allowed_methods: Vec<String>,
     pub allowed_side_effect_intents: Vec<SideEffectIntent>,
+    pub required_scopes: Vec<String>,
+    pub timeout_ms: u64,
+    pub max_retries: u8,
+    pub evidence_policy: EndpointEvidencePolicy,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointEvidencePolicy {
+    SummaryOnly,
+    HeadersRedacted,
+    BodyRedacted,
+    StatusOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,8 +242,20 @@ impl ConnectorExecutionConfig {
                 }
                 if endpoint.allowed_side_effect_intents.is_empty() {
                     return Err(ConnectorExecutionError::new(
-                        "connector_config_invalid",
+                        "endpoint_config_invalid",
                         "endpoint allowed_side_effect_intents must not be empty",
+                    ));
+                }
+                if endpoint.timeout_ms == 0 || endpoint.timeout_ms > 120_000 {
+                    return Err(ConnectorExecutionError::new(
+                        "endpoint_config_invalid",
+                        "endpoint timeout_ms must be in range 1..=120000",
+                    ));
+                }
+                if endpoint.max_retries > 3 {
+                    return Err(ConnectorExecutionError::new(
+                        "endpoint_config_invalid",
+                        "endpoint max_retries must be <= 3",
                     ));
                 }
             }
@@ -476,6 +502,59 @@ impl GenericHttpConnectorExecutor {
     }
 }
 
+fn auth_scopes_from_context(auth_context: &Value) -> Vec<String> {
+    auth_context
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn build_evidence_response(
+    policy: EndpointEvidencePolicy,
+    status: u16,
+    preview: String,
+    method: &str,
+    endpoint_ref: &str,
+    resolved_url: &str,
+    attempts: u8,
+    max_retries: u8,
+    timeout_ms: u64,
+    credential_ref_count: usize,
+    last_non_2xx_http_status: Option<u16>,
+) -> Value {
+    let mut response = json!({
+        "connector_mode": "http_generic",
+        "side_effect_performed": true,
+        "provider": "http.generic.v1",
+        "endpoint_ref": endpoint_ref,
+        "resolved_url": resolved_url,
+        "method": method,
+        "http_status": status,
+        "attempts": attempts,
+        "max_retries": max_retries,
+        "timeout_ms": timeout_ms,
+        "credential_ref_count": credential_ref_count,
+        "last_non_2xx_http_status": last_non_2xx_http_status,
+        "evidence_policy": policy
+    });
+    match policy {
+        EndpointEvidencePolicy::StatusOnly => {}
+        EndpointEvidencePolicy::SummaryOnly | EndpointEvidencePolicy::HeadersRedacted => {
+            response["response_preview"] = json!(preview);
+        }
+        EndpointEvidencePolicy::BodyRedacted => {
+            response["response_preview"] = json!("[REDACTED]");
+        }
+    }
+    response
+}
+
 #[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
 #[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
 impl ConnectorExecutor for WebhookSiteConnectorExecutor {
@@ -670,10 +749,16 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
             .find(|entry| entry.endpoint_ref == endpoint_ref)
             .ok_or_else(|| {
                 ConnectorExecutionError::new(
-                    "connector_endpoint_denied",
+                    "endpoint_unknown",
                     "endpoint_ref is not configured in runtime allowlist",
                 )
             })?;
+        if !endpoint.enabled {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_disabled",
+                "endpoint_ref is disabled",
+            ));
+        }
 
         if !endpoint
             .allowed_side_effect_intents
@@ -681,7 +766,7 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
             .any(|i| *i == request.side_effect_intent)
         {
             return Err(ConnectorExecutionError::new(
-                "connector_side_effect_denied",
+                "endpoint_intent_denied",
                 "endpoint_ref does not allow side_effect_intent",
             ));
         }
@@ -694,14 +779,25 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
             .to_ascii_uppercase();
         if method != "GET" && method != "POST" {
             return Err(ConnectorExecutionError::new(
-                "connector_method_denied",
+                "endpoint_method_denied",
                 "http_generic supports only GET/POST in V0",
             ));
         }
         if !endpoint.allowed_methods.iter().any(|m| m == &method) {
             return Err(ConnectorExecutionError::new(
-                "connector_method_denied",
+                "endpoint_method_denied",
                 "method is not allowlisted for endpoint_ref",
+            ));
+        }
+        let scopes = auth_scopes_from_context(&request.auth_context);
+        let scope_denied = endpoint
+            .required_scopes
+            .iter()
+            .find(|required| !scopes.iter().any(|scope| scope == *required));
+        if let Some(required) = scope_denied {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_scope_denied",
+                &format!("required scope missing: {required}"),
             ));
         }
 
@@ -727,14 +823,14 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
                     url: endpoint.url.clone(),
                     headers: headers.clone(),
                     body: body.clone(),
-                    timeout_ms: self.config.timeout_ms,
+                    timeout_ms: endpoint.timeout_ms,
                 })
                 .await;
             match result {
                 Ok(r) if (200..300).contains(&r.status) => break r,
                 Ok(r) => {
                     last_http_status = Some(r.status);
-                    if r.status >= 500 && attempt < self.config.max_retries {
+                    if r.status >= 500 && attempt < endpoint.max_retries {
                         attempt += 1;
                         continue;
                     }
@@ -746,7 +842,7 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
                 Err(err) => {
                     if (err.code == "connector_provider_network_failed"
                         || err.code == "connector_provider_timeout")
-                        && attempt < self.config.max_retries
+                        && attempt < endpoint.max_retries
                     {
                         attempt += 1;
                         continue;
@@ -764,21 +860,19 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
             auth_context: request.auth_context,
             policy_result: request.policy_result,
             status: ConnectorCallStatus::Completed,
-            response: json!({
-                "connector_mode": "http_generic",
-                "side_effect_performed": true,
-                "provider": "http.generic.v1",
-                "endpoint_ref": endpoint_ref,
-                "resolved_url": endpoint.url,
-                "method": method,
-                "http_status": http_result.status,
-                "attempts": attempt + 1,
-                "max_retries": self.config.max_retries,
-                "timeout_ms": self.config.timeout_ms,
-                "response_preview": http_result.body_preview,
-                "credential_ref_count": request.credential_refs.len(),
-                "last_non_2xx_http_status": last_http_status
-            }),
+            response: build_evidence_response(
+                endpoint.evidence_policy,
+                http_result.status,
+                http_result.body_preview,
+                &method,
+                &endpoint_ref,
+                &endpoint.url,
+                attempt + 1,
+                endpoint.max_retries,
+                endpoint.timeout_ms,
+                request.credential_refs.len(),
+                last_http_status,
+            ),
             timing: ConnectorTiming {
                 started_at: request.started_at,
                 finished_at: Some("2026-05-23T10:30:01Z".to_string()),

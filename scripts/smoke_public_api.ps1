@@ -16,6 +16,17 @@ $payload.action.trace_ref = "trace:$rid"
 $payload.correlation = @{ correlation_id = "corr:$rid"; trace_id = "trace:$rid" }
 
 if ($WebhookUrl -ne "") {
+  $authContext = @{
+    mode = "placeholder"
+    scopes = @("actions.run")
+    verified = $false
+    source = "smoke_script"
+  }
+  if ($payload.PSObject.Properties.Match("auth_context").Count -gt 0) {
+    $payload.auth_context = $authContext
+  } else {
+    $payload | Add-Member -NotePropertyName "auth_context" -NotePropertyValue $authContext
+  }
   $payload.action.action_type = "webhook_notify"
   $payload.action.connector_context = @{
     connector_id = "connector.http.generic.v1"

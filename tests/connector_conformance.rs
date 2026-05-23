@@ -1,6 +1,6 @@
 use mova_agent_api::connectors::{
     create_connector_executor, ConnectorCallStatus, ConnectorExecutionConfig, ConnectorExecutionError,
-    ConnectorExecutionRequest, ConnectorExecutor, EndpointRegistryEntry, GenericHttpClient,
+    ConnectorExecutionRequest, ConnectorExecutor, EndpointEvidencePolicy, EndpointRegistryEntry, GenericHttpClient,
     GenericHttpConnectorExecutor, GenericHttpRequest, OfflineStubRule, SideEffectIntent, WebhookHttpClient,
     WebhookHttpResult, WebhookSiteConnectorExecutor,
 };
@@ -160,7 +160,7 @@ async fn webhook_site_allows_only_allowlisted_target() {
                 "correlation_id": "corr_01",
                 "trace_ref": "trace:run_01"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -210,7 +210,7 @@ async fn webhook_site_denies_non_allowlisted_target() {
                 "correlation_id": "corr_02",
                 "trace_ref": "trace:run_02"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -256,7 +256,7 @@ async fn webhook_site_maps_provider_http_failure() {
                 "correlation_id": "corr_03",
                 "trace_ref": "trace:run_03"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -326,6 +326,11 @@ fn generic_cfg() -> ConnectorExecutionConfig {
             url: "https://webhook.site/allowed-token".to_string(),
             allowed_methods: vec!["POST".to_string()],
             allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+            required_scopes: vec!["actions.run".to_string()],
+            timeout_ms: 10_000,
+            max_retries: 0,
+            evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+            enabled: true,
         }],
         timeout_ms: 10_000,
         max_retries: 0,
@@ -355,7 +360,7 @@ async fn generic_http_allows_allowlisted_endpoint_ref() {
                 "headers": {"x-correlation-id":"corr_01"},
                 "body": {"hello":"world"}
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -390,7 +395,7 @@ async fn generic_http_denies_unknown_endpoint_ref() {
                 "endpoint_ref": "unknown",
                 "method": "POST"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -401,7 +406,7 @@ async fn generic_http_denies_unknown_endpoint_ref() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code, "connector_endpoint_denied");
+    assert_eq!(err.code, "endpoint_unknown");
 }
 
 #[tokio::test]
@@ -424,7 +429,7 @@ async fn generic_http_denies_disallowed_method() {
                 "endpoint_ref": "webhook_site_test",
                 "method": "GET"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -435,7 +440,7 @@ async fn generic_http_denies_disallowed_method() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code, "connector_method_denied");
+    assert_eq!(err.code, "endpoint_method_denied");
 }
 
 #[tokio::test]
@@ -458,7 +463,7 @@ async fn generic_http_maps_timeout_without_retry() {
                 "endpoint_ref": "webhook_site_test",
                 "method": "POST"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -475,7 +480,7 @@ async fn generic_http_maps_timeout_without_retry() {
 #[tokio::test]
 async fn generic_http_retries_timeout_then_succeeds() {
     let mut cfg = generic_cfg();
-    cfg.max_retries = 1;
+    cfg.endpoint_registry[0].max_retries = 1;
     let calls = Arc::new(Mutex::new(0));
     let exec = GenericHttpConnectorExecutor::new(
         cfg,
@@ -492,7 +497,7 @@ async fn generic_http_retries_timeout_then_succeeds() {
                 "endpoint_ref": "webhook_site_test",
                 "method": "POST"
             }),
-            auth_context: json!({}),
+            auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
                 decision: AdmissionDecision::Allow,
@@ -505,4 +510,146 @@ async fn generic_http_retries_timeout_then_succeeds() {
         .unwrap();
     assert_eq!(result.call.response["attempts"], 2);
     assert_eq!(*calls.lock().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn generic_http_denies_disabled_endpoint() {
+    let mut cfg = generic_cfg();
+    cfg.endpoint_registry[0].enabled = false;
+    let exec = GenericHttpConnectorExecutor::new(
+        cfg,
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_07".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({"scopes":["actions.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "endpoint_disabled");
+}
+
+#[tokio::test]
+async fn generic_http_respects_status_only_evidence_policy() {
+    let mut cfg = generic_cfg();
+    cfg.endpoint_registry[0].evidence_policy = EndpointEvidencePolicy::StatusOnly;
+    let exec = GenericHttpConnectorExecutor::new(
+        cfg,
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "should-not-be-exposed".to_string(),
+            }),
+        }),
+    );
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_08".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({"scopes":["actions.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    assert!(result.call.response.get("response_preview").is_none());
+}
+
+#[tokio::test]
+async fn generic_http_denies_missing_required_scope() {
+    let exec = GenericHttpConnectorExecutor::new(
+        generic_cfg(),
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_06".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({"scopes":["actions.validate"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "endpoint_scope_denied");
+}
+
+#[tokio::test]
+async fn generic_http_denies_disallowed_intent_for_endpoint() {
+    let mut cfg = generic_cfg();
+    cfg.endpoint_registry[0].allowed_side_effect_intents = vec![SideEffectIntent::LocalOnly];
+    let exec = GenericHttpConnectorExecutor::new(
+        cfg,
+        Arc::new(MockGenericHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: "ok".to_string(),
+            }),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "connector.http.generic.v1".to_string(),
+            call_id: "call_http_09".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "endpoint_ref": "webhook_site_test",
+                "method": "POST"
+            }),
+            auth_context: json!({"scopes":["actions.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "endpoint_intent_denied");
 }

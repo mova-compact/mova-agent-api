@@ -6,8 +6,9 @@
 use crate::auth::{create_auth_verifier, AuthVerifier};
 use crate::connectors::{
     ConnectorExecutionConfig, ConnectorExecutionError, ConnectorExecutionRequest, ConnectorExecutionResult, ConnectorExecutor,
-    DisabledWebhookHttpClient, EndpointRegistryEntry, GenericHttpClient, GenericHttpConnectorExecutor, GenericHttpRequest,
-    SideEffectIntent, WebhookHttpClient, WebhookHttpResult, WebhookSiteConnectorExecutor,
+    DisabledWebhookHttpClient, EndpointEvidencePolicy, EndpointRegistryEntry, GenericHttpClient,
+    GenericHttpConnectorExecutor, GenericHttpRequest, SideEffectIntent, WebhookHttpClient, WebhookHttpResult,
+    WebhookSiteConnectorExecutor,
 };
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
@@ -157,6 +158,21 @@ fn webhook_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
 }
 
 fn http_generic_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
+    if let Ok(raw) = env.var("MOVA_HTTP_ENDPOINT_REGISTRY_JSON") {
+        let parsed: Vec<EndpointRegistryEntry> = serde_json::from_str(&raw.to_string()).ok()?;
+        if !parsed.is_empty() {
+            return Some(ConnectorExecutionConfig {
+                adapter_kind: "http_generic".to_string(),
+                allowed_connectors: vec!["connector.http.generic.v1".to_string()],
+                allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                offline_stub_rules: Vec::new(),
+                allowed_webhook_urls: Vec::new(),
+                endpoint_registry: parsed,
+                timeout_ms: 10_000,
+                max_retries: 0,
+            });
+        }
+    }
     let endpoint_ref = env.var("MOVA_HTTP_ENDPOINT_REF").ok()?.to_string();
     let endpoint_url = env.var("MOVA_HTTP_ENDPOINT_URL").ok()?.to_string();
     let methods = env
@@ -181,6 +197,11 @@ fn http_generic_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
             url: endpoint_url,
             allowed_methods: methods,
             allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+            required_scopes: vec!["actions.run".to_string()],
+            timeout_ms: 10_000,
+            max_retries: 0,
+            evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+            enabled: true,
         }],
         timeout_ms: 10_000,
         max_retries: 0,
@@ -228,6 +249,11 @@ fn state_from_env(env: &Env) -> WorkerState {
                         url: "https://webhook.site/invalid".to_string(),
                         allowed_methods: vec!["POST".to_string()],
                         allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                        required_scopes: vec!["actions.run".to_string()],
+                        timeout_ms: 10_000,
+                        max_retries: 0,
+                        evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                        enabled: true,
                     }],
                     timeout_ms: 10_000,
                     max_retries: 0,
@@ -547,7 +573,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         call_id: format!("call_{}", envelope.request_id),
                         side_effect_intent,
                         request: connector_request,
-                        auth_context: json!({}),
+                        auth_context: serde_json::to_value(&envelope.auth_context).unwrap_or_else(|_| json!({})),
                         credential_refs: Vec::new(),
                         policy_result: admission.to_summary(),
                         started_at: "2026-05-23T10:30:00Z".to_string(),

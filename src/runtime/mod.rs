@@ -1,7 +1,7 @@
 //! Runtime configuration boundary for MOVA Agent API V0.
 
 use crate::auth::AuthTrustConfig;
-use crate::connectors::{ConnectorExecutionConfig, EndpointRegistryEntry, SideEffectIntent};
+use crate::connectors::{ConnectorExecutionConfig, EndpointEvidencePolicy, EndpointRegistryEntry, SideEffectIntent};
 use crate::secrets::{SecretBoundaryError, SecretRef, SecretRefKind};
 use crate::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
@@ -147,7 +147,23 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
                     url,
                     allowed_methods: methods,
                     allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                    required_scopes: vec!["actions.run".to_string()],
+                    timeout_ms: cfg.connectors.timeout_ms,
+                    max_retries: cfg.connectors.max_retries,
+                    evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                    enabled: true,
                 }];
+            }
+        }
+        if let Ok(value) = std::env::var("MOVA_HTTP_ENDPOINT_REGISTRY_JSON") {
+            let parsed: Vec<EndpointRegistryEntry> = serde_json::from_str(&value).map_err(|_| {
+                RuntimeConfigError::new(
+                    "connector_config_invalid",
+                    "MOVA_HTTP_ENDPOINT_REGISTRY_JSON must be valid endpoint registry JSON array",
+                )
+            })?;
+            if !parsed.is_empty() {
+                cfg.connectors.endpoint_registry = parsed;
             }
         }
         if cfg.connectors.adapter_kind == "webhook_site" {
