@@ -110,6 +110,8 @@ async fn post_actions_run_creates_deterministic_run() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["run_id"], "run_req_http_01");
     assert_eq!(json["status"], "completed");
+    assert_eq!(json["trace_ref"], "trace:req_http_01");
+    assert_eq!(json["observation_count"], 1);
 }
 
 #[tokio::test]
@@ -144,6 +146,8 @@ async fn get_run_returns_status_for_created_run() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["run_id"], "run_req_http_01");
     assert_eq!(json["status"], "completed");
+    assert_eq!(json["trace_ref"], "trace:req_http_01");
+    assert_eq!(json["observation_count"], 1);
 }
 
 #[tokio::test]

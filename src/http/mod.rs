@@ -46,12 +46,16 @@ struct ValidateResponse {
 struct RunResponse {
     run_id: String,
     status: String,
+    trace_ref: String,
+    observation_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct RunStatusResponse {
     run_id: String,
     status: String,
+    trace_ref: String,
+    observation_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -225,6 +229,8 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
         status: RunStatus::Completed,
         evidence,
     };
+    let trace_ref = snapshot.evidence.trace_ref.clone();
+    let observation_count = snapshot.evidence.observation_refs.len();
     state.runs.lock().expect("state mutex poisoned").insert(run_id.clone(), snapshot);
 
     (
@@ -232,6 +238,8 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
         Json(RunResponse {
             run_id,
             status: RunStatus::Completed.as_str().to_string(),
+            trace_ref,
+            observation_count,
         }),
     )
         .into_response()
@@ -245,6 +253,8 @@ async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> i
             Json(RunStatusResponse {
                 run_id: snapshot.run_id.clone(),
                 status: snapshot.status.as_str().to_string(),
+                trace_ref: snapshot.evidence.trace_ref.clone(),
+                observation_count: snapshot.evidence.observation_refs.len(),
             }),
         )
             .into_response(),
