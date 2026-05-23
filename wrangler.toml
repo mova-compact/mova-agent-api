@@ -1,4 +1,5 @@
 name = "mova-agent-api-v0"
+account_id = "1a59aedce21bfac94cb0f6c8b2da0484"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-05-23"
 workers_dev = true

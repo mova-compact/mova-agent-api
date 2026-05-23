@@ -2,10 +2,11 @@
 
 ## Deployment status
 
-- Verdict: `PASS_WITH_WARNINGS` (worker-build path unblocked; publish blocked by Cloudflare account onboarding)
+- Verdict: `PASS_WITH_WARNINGS` (deployment complete on workers.dev; run-status retrieval remains stateless in Worker mode)
 - Target worker name: `mova-agent-api-v0`
-- Deployed URL: not available yet (`workers.dev` subdomain is not registered on the account)
-- Deployed commit target: `204bcf4` (plus local unblock changes in this task)
+- workers.dev subdomain chosen: `s-myasoedov81.workers.dev` (account-level existing subdomain)
+- Deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
+- Deployed commit target: `89462c0`
 
 ## What was prepared
 
@@ -36,6 +37,8 @@ Core business modules and V0 boundaries were not rewritten.
 ### Cloudflare auth check (green)
 
 - `npx wrangler whoami`
+  - account: `1a59aedce21bfac94cb0f6c8b2da0484`
+  - identity: `s.myasoedov81@gmail.com`
 
 ### Dependency diagnostics
 
@@ -56,12 +59,13 @@ Core business modules and V0 boundaries were not rewritten.
 - `cargo build --target wasm32-unknown-unknown --features worker`
   - result: success after isolating non-WASM dependency path.
 
-### Deploy attempts (partially successful)
+### Deploy attempts
 
-- `npx wrangler deploy` (multiple attempts)
+- `npx wrangler deploy` (new account)
   - custom build succeeded.
   - worker upload succeeded.
-  - publish failed due to missing `workers.dev` subdomain registration on Cloudflare account.
+  - publish succeeded.
+  - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
 
 ## Blocking error summary
 
@@ -78,7 +82,7 @@ Original blocker was in Wrangler custom build pre-step:
 
 This blocker is environment-level, not MOVA Agent API core/runtime logic.
 
-Current blocker after deploy-path fix:
+Previous blocker after deploy-path fix:
 
 - Build/upload status:
   - `worker-build` step: success.
@@ -92,7 +96,29 @@ Current blocker after deploy-path fix:
 
 ## Smoke test status
 
-Not executed against Cloudflare URL because routable `workers.dev` endpoint was not provisioned by Cloudflare account onboarding.
+Smoke executed against deployed URL:
+
+- `GET /capabilities`
+  - status: success
+  - result: V0 execution path and capability surface returned.
+- `POST /actions/validate` with `examples/agent_request_minimal.json`
+  - status: success
+  - result: `{"valid": true}`.
+- `POST /actions/run` with `examples/agent_request_minimal.json`
+  - status: success
+  - result: `run_id=run_req_01`, `status=completed`, deterministic connector summary returned.
+- `GET /runs/{run_id}` for `run_req_01`
+  - status: not found (`run_not_found`).
+  - note: current Worker deployment does not preserve cross-request in-memory run store.
+- `GET /runs/{run_id}/evidence` for `run_req_01`
+  - status: success
+  - result: deterministic evidence returned with policy summary and connector result.
+
+Secret-safety and side-effect checks:
+
+- No raw secret material appeared in returned payloads.
+- Connector result confirmed deterministic local mode and `side_effect_performed=false`.
+- No live external connector side effects observed.
 
 ## Storage behavior/limitation note
 
@@ -109,7 +135,7 @@ Not executed against Cloudflare URL because routable `workers.dev` endpoint was 
   - no live connector/provider integrations
   - no orchestration/dynamic routing/autonomous authority
 - Not completed:
-  - Public endpoint smoke due missing account `workers.dev` registration
+  - durable cross-request run retrieval on Worker runtime (still non-promoted persistence provider)
 
 ## What remains non-production
 
@@ -120,12 +146,8 @@ Not executed against Cloudflare URL because routable `workers.dev` endpoint was 
 
 ## Next recommended promotion
 
-Complete Cloudflare account onboarding by registering a `workers.dev` subdomain, then re-run:
+Promote production-grade Worker persistence provider (explicitly scoped promotion, for example KV/D1 adapter block) to make `GET /runs/{run_id}` stable across requests:
 
-1. `npx wrangler deploy`
-2. Smoke routes:
-   - `GET /capabilities`
-   - `POST /actions/validate`
-   - `POST /actions/run`
-   - `GET /runs/{run_id}`
-   - `GET /runs/{run_id}/evidence`
+1. define provider-specific storage adapter boundary for Worker runtime.
+2. keep HTTP adapter-only ownership unchanged.
+3. re-run deployed smoke including run-status retrieval consistency.
