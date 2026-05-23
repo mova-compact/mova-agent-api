@@ -22,18 +22,22 @@ This document defines the promoted V0 auth boundary for `mova-agent-api` without
   - `scopes`
   - `source`
   - `verified`
-- In V0, `verified` is placeholder-only and must remain `false`.
+- Incoming request `auth_context.verified` is not trusted and must remain `false` at request boundary.
 - Missing `auth_context` is valid in V0 and resolves to deterministic placeholder semantics.
 
 ## Policy behavior in V0
 
 - Policy admission receives normalized auth context.
 - Policy stores auth context in admission constraints for traceable policy input.
+- Production-mode policy flow may run deterministic local verification through the auth contract layer.
 - Policy emits deterministic placeholder reason codes:
   - `ok_auth_placeholder_none`
   - `ok_auth_placeholder_request`
   - `ok_auth_placeholder_header`
-- No production authorization decisioning is introduced.
+- Production-mode authorization decisioning is policy-owned and deterministic:
+  - `auth_unverified`
+  - `scope_denied`
+  - `authorized`
 
 ## HTTP adapter behavior in V0
 
@@ -44,14 +48,14 @@ This document defines the promoted V0 auth boundary for `mova-agent-api` without
   - `x-mova-scopes` (comma-separated)
   - `x-mova-auth-source`
 - Header metadata is forwarded as policy input only.
-- No token verification, identity provider integration, or transport-owned authorization is performed.
+- Transport does not perform token verification or final authorization decisions.
 
 ## Frozen areas (unchanged)
 
 The following remain frozen and require explicit future promotion:
 
-- production auth enforcement
-- real token validation
+- external-provider-backed production auth enforcement
+- external token validation
 - external identity provider integration
 - durable user/session state
 - durable persistence
