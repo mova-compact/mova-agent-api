@@ -39,7 +39,6 @@ struct CapabilitiesResponse {
 #[derive(Debug, Clone, Serialize)]
 struct ValidateResponse {
     valid: bool,
-    errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,29 +112,22 @@ async fn post_actions_validate(Json(payload): Json<Value>) -> impl IntoResponse 
                     StatusCode::OK,
                     Json(ValidateResponse {
                         valid: true,
-                        errors: Vec::new(),
                     }),
                 )
+                    .into_response()
             } else {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ValidateResponse {
-                        valid: false,
-                        errors: semantic_errors
-                            .iter()
-                            .map(render_validation_error)
-                            .collect::<Vec<_>>(),
-                    }),
+                bad_request(
+                    "validation_failed",
+                    "request validation failed",
+                    semantic_errors
+                        .iter()
+                        .map(render_validation_error)
+                        .collect::<Vec<_>>(),
                 )
+                    .into_response()
             }
         }
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                errors: vec![format!("payload: {err}")],
-            }),
-        ),
+        Err(err) => bad_request("validation_failed", "request parsing failed", vec![format!("payload: {err}")]).into_response(),
     }
 }
 

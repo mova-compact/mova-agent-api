@@ -86,8 +86,8 @@ async fn post_actions_validate_returns_clear_validation_error() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["valid"], false);
-    assert!(json["errors"].is_array());
+    assert_eq!(json["error"]["code"], "validation_failed");
+    assert!(json["error"]["details"].is_array());
 }
 
 #[tokio::test]
