@@ -6,3 +6,7 @@ workers_dev = true
 
 [build]
 command = "worker-build --release --features worker"
+
+[[kv_namespaces]]
+binding = "MOVA_RUN_STORE"
+id = "a276a02220fd43ff938eb4ff6b82e0a7"

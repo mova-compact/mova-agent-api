@@ -473,7 +473,7 @@ async fn post_actions_run(
     };
     let trace_ref = snapshot.evidence.trace_ref.clone();
     let observation_count = snapshot.evidence.observation_refs.len();
-    if let Err(err) = state.run_store.put_snapshot(snapshot) {
+    if let Err(err) = state.run_store.put_snapshot(snapshot).await {
         return storage_unavailable(&err).into_response();
     }
 
@@ -575,7 +575,7 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {
-    match state.run_store.get_snapshot(&run_id) {
+    match state.run_store.get_snapshot(&run_id).await {
         Err(err) => storage_unavailable(&err).into_response(),
         Ok(None) => not_found_run(&run_id).into_response(),
         Ok(Some(snapshot)) => (
@@ -592,7 +592,7 @@ async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> i
 }
 
 async fn get_run_evidence(State(state): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {
-    match state.run_store.get_snapshot(&run_id) {
+    match state.run_store.get_snapshot(&run_id).await {
         Err(err) => storage_unavailable(&err).into_response(),
         Ok(None) => not_found_run(&run_id).into_response(),
         Ok(Some(snapshot)) => (

@@ -34,24 +34,24 @@ fn sample_snapshot(run_id: &str) -> RunSnapshot {
     }
 }
 
-fn assert_store_roundtrip(store: &dyn RunStore, run_id: &str) {
+async fn assert_store_roundtrip(store: &dyn RunStore, run_id: &str) {
     let snapshot = sample_snapshot(run_id);
-    store.put_snapshot(snapshot.clone()).unwrap();
-    let read = store.get_snapshot(run_id).unwrap().unwrap();
+    store.put_snapshot(snapshot.clone()).await.unwrap();
+    let read = store.get_snapshot(run_id).await.unwrap().unwrap();
     assert_eq!(read.run_id, run_id);
     assert_eq!(read.evidence.trace_ref, format!("trace:{run_id}"));
     assert_eq!(read.observations.len(), 1);
 }
 
-#[test]
-fn in_memory_store_conformance_roundtrip() {
+#[tokio::test]
+async fn in_memory_store_conformance_roundtrip() {
     let config = StorageConfig::in_memory_default();
     let store = create_run_store(&config);
-    assert_store_roundtrip(store.as_ref(), "run_store_mem_01");
+    assert_store_roundtrip(store.as_ref(), "run_store_mem_01").await;
 }
 
-#[test]
-fn file_backed_store_conformance_roundtrip() {
+#[tokio::test]
+async fn file_backed_store_conformance_roundtrip() {
     let unique = format!(
         "mova_agent_api_storage_conformance_{}",
         std::time::SystemTime::now()
@@ -62,12 +62,12 @@ fn file_backed_store_conformance_roundtrip() {
     let dir = std::env::temp_dir().join(unique);
     let config = StorageConfig::file_backed_local(dir.to_string_lossy().to_string());
     let store = create_run_store(&config);
-    assert_store_roundtrip(store.as_ref(), "run_store_file_01");
+    assert_store_roundtrip(store.as_ref(), "run_store_file_01").await;
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn invalid_storage_config_maps_to_deterministic_failure() {
+#[tokio::test]
+async fn invalid_storage_config_maps_to_deterministic_failure() {
     let config = StorageConfig {
         adapter_kind: "unsupported".to_string(),
         base_path: None,
@@ -75,12 +75,13 @@ fn invalid_storage_config_maps_to_deterministic_failure() {
     let store = create_run_store(&config);
     let err = store
         .put_snapshot(sample_snapshot("run_store_invalid_01"))
+        .await
         .unwrap_err();
     assert_eq!(err.code, "storage_config_invalid");
 }
 
-#[test]
-fn file_backed_missing_base_path_maps_to_deterministic_failure() {
+#[tokio::test]
+async fn file_backed_missing_base_path_maps_to_deterministic_failure() {
     let config = StorageConfig {
         adapter_kind: "file_backed_local".to_string(),
         base_path: None,
@@ -88,6 +89,7 @@ fn file_backed_missing_base_path_maps_to_deterministic_failure() {
     let store = create_run_store(&config);
     let err = store
         .get_snapshot("run_missing")
+        .await
         .unwrap_err();
     assert_eq!(err.code, "storage_config_invalid");
 }

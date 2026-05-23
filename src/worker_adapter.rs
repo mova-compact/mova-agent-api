@@ -12,9 +12,9 @@ use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope};
-use crate::storage::{create_run_store, RunSnapshot, RunStore, StorageConfig};
+use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
 use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use worker::{event, Context, Env, Request, Response, Result, Router};
 
 struct WorkerState {
@@ -23,18 +23,24 @@ struct WorkerState {
     connector_executor: Arc<dyn ConnectorExecutor>,
 }
 
-static WORKER_STATE: OnceLock<WorkerState> = OnceLock::new();
-
-fn state() -> &'static WorkerState {
-    WORKER_STATE.get_or_init(|| WorkerState {
-        run_store: Arc::from(create_run_store(&StorageConfig::in_memory_default())),
+fn state_from_env(env: &Env) -> WorkerState {
+    let run_store: Arc<dyn RunStore> = match env.kv("MOVA_RUN_STORE") {
+        Ok(kv) => Arc::new(CloudflareKvRunStore::new(kv)),
+        Err(_) => Arc::new(crate::storage::InMemoryRunStore::new()),
+    };
+    WorkerState {
+        run_store,
         auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
         connector_executor: Arc::from(create_connector_executor(&ConnectorExecutionConfig::deterministic_local_default())),
-    })
+    }
 }
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    let state = Arc::new(state_from_env(&env));
+    let state_run = Arc::clone(&state);
+    let state_get_run = Arc::clone(&state);
+    let state_get_evidence = Arc::clone(&state);
     Router::new()
         .get_async("/capabilities", |_req, _ctx| async move {
             Response::from_json(&json!({
@@ -86,7 +92,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 ),
             }
         })
-        .post_async("/actions/run", |mut req, _ctx| async move {
+        .post_async("/actions/run", move |mut req, _ctx| {
+            let state = Arc::clone(&state_run);
+            async move {
             let payload: Value = req.json().await?;
             let envelope = match parse_request_envelope(payload) {
                 Ok(v) => v,
@@ -115,13 +123,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
 
             let run_id = format!("run_{}", envelope.request_id);
-            let admission = PolicyAdmission::from_auth_context(
+                let admission = PolicyAdmission::from_auth_context(
                 format!("adm_{}", envelope.request_id),
                 envelope.action.action_id.clone(),
                 "policy.default.v0".to_string(),
                 "actions.run",
                 envelope.auth_context.clone(),
-                state().auth_verifier.as_ref(),
+                state.auth_verifier.as_ref(),
             );
             if admission.decision != AdmissionDecision::Allow {
                 return Response::error(
@@ -134,7 +142,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
 
             let _plan = FlatExecutionPlan::from_action(run_id.clone(), envelope.action.action_id.clone());
-            let connector_call = match state().connector_executor.execute(ConnectorExecutionRequest {
+                let connector_call = match state.connector_executor.execute(ConnectorExecutionRequest {
                 connector_id: envelope
                     .action
                     .connector_context
@@ -187,7 +195,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 evidence,
                 observations: journal.records().to_vec(),
             };
-            if let Err(err) = state().run_store.put_snapshot(snapshot.clone()) {
+                if let Err(err) = state.run_store.put_snapshot(snapshot.clone()).await {
                 return Response::error(
                     format!(
                         "{{\"error\":{{\"code\":\"storage_unavailable\",\"message\":\"{}\"}}}}",
@@ -197,16 +205,19 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 );
             }
 
-            Response::from_json(&json!({
+                Response::from_json(&json!({
                 "run_id": run_id,
                 "status": "completed",
                 "trace_ref": snapshot.evidence.trace_ref,
                 "observation_count": snapshot.evidence.observation_refs.len()
             }))
+            }
         })
-        .get_async("/runs/:run_id", |_req, ctx| async move {
+        .get_async("/runs/:run_id", move |_req, ctx| {
+            let state = Arc::clone(&state_get_run);
+            async move {
             let run_id = ctx.param("run_id").cloned().unwrap_or_default();
-            match state().run_store.get_snapshot(&run_id) {
+            match state.run_store.get_snapshot(&run_id).await {
                 Ok(Some(snapshot)) => Response::from_json(&json!({
                     "run_id": snapshot.run_id,
                     "status": snapshot.evidence.status.as_str(),
@@ -227,11 +238,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     ),
                     503,
                 ),
+                }
             }
         })
-        .get_async("/runs/:run_id/evidence", |_req, ctx| async move {
+        .get_async("/runs/:run_id/evidence", move |_req, ctx| {
+            let state = Arc::clone(&state_get_evidence);
+            async move {
             let run_id = ctx.param("run_id").cloned().unwrap_or_default();
-            match state().run_store.get_snapshot(&run_id) {
+            match state.run_store.get_snapshot(&run_id).await {
                 Ok(Some(snapshot)) => Response::from_json(&snapshot.evidence),
                 Ok(None) => Response::error(
                     format!(
@@ -247,6 +261,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     ),
                     503,
                 ),
+                }
             }
         })
         .run(req, env)

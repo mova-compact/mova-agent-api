@@ -2,11 +2,11 @@
 
 ## Deployment status
 
-- Verdict: `PASS_WITH_WARNINGS` (deployment complete on workers.dev; run-status retrieval remains stateless in Worker mode)
+- Verdict: `PASS` (deployment complete with Cloudflare KV-backed cross-request run persistence)
 - Target worker name: `mova-agent-api-v0`
 - workers.dev subdomain chosen: `s-myasoedov81.workers.dev` (account-level existing subdomain)
 - Deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
-- Deployed commit target: `89462c0`
+- Deployed commit target: `74bbd48` + Cloudflare KV persistence promotion changes
 
 ## What was prepared
 
@@ -22,6 +22,10 @@
   - `worker-build --release --features worker`
 - Aligned `worker` crate version with locally available `worker-build`:
   - `worker = "0.7.5"`
+- Added Cloudflare Worker persistence adapter behind `RunStore`:
+  - `CloudflareKvRunStore` (KV binding `MOVA_RUN_STORE`)
+- Registered and bound Cloudflare KV namespace:
+  - `a276a02220fd43ff938eb4ff6b82e0a7`
 
 Core business modules and V0 boundaries were not rewritten.
 
@@ -66,6 +70,7 @@ Core business modules and V0 boundaries were not rewritten.
   - worker upload succeeded.
   - publish succeeded.
   - deployed URL: `https://mova-agent-api-v0.s-myasoedov81.workers.dev`
+  - active version: `a9ff1524-3da2-4d78-9ef7-f9424ef0fec7`
 
 ## Blocking error summary
 
@@ -96,7 +101,7 @@ Previous blocker after deploy-path fix:
 
 ## Smoke test status
 
-Smoke executed against deployed URL:
+Smoke executed against deployed URL (separate HTTP requests):
 
 - `GET /capabilities`
   - status: success
@@ -104,13 +109,13 @@ Smoke executed against deployed URL:
 - `POST /actions/validate` with `examples/agent_request_minimal.json`
   - status: success
   - result: `{"valid": true}`.
-- `POST /actions/run` with `examples/agent_request_minimal.json`
+- `POST /actions/run` with `examples/agent_request_minimal.json` (request_id overridden to `req_kv_1779545603`)
   - status: success
-  - result: `run_id=run_req_01`, `status=completed`, deterministic connector summary returned.
-- `GET /runs/{run_id}` for `run_req_01`
-  - status: not found (`run_not_found`).
-  - note: current Worker deployment does not preserve cross-request in-memory run store.
-- `GET /runs/{run_id}/evidence` for `run_req_01`
+  - result: `run_id=run_req_kv_1779545603`, `status=completed`, deterministic connector summary returned.
+- `GET /runs/{run_id}` for `run_req_kv_1779545603`
+  - status: success
+  - result: matching run status, trace_ref, observation_count.
+- `GET /runs/{run_id}/evidence` for `run_req_kv_1779545603`
   - status: success
   - result: deterministic evidence returned with policy summary and connector result.
 
@@ -134,20 +139,21 @@ Secret-safety and side-effect checks:
   - policy/auth/execution/connectors/observation/evidence/storage ownership split
   - no live connector/provider integrations
   - no orchestration/dynamic routing/autonomous authority
-- Not completed:
-  - durable cross-request run retrieval on Worker runtime (still non-promoted persistence provider)
+- Completed:
+  - cross-request run/evidence lookup through Cloudflare KV-backed `RunStore` boundary
 
 ## What remains non-production
 
 - No real external connector calls
 - No production auth provider integration
-- No cloud storage provider promotion (D1/R2/KV)
+- Cloudflare KV promoted only as Worker run/evidence persistence adapter
+- No D1/R2 promotion
 - No deployment automation pipeline
 
 ## Next recommended promotion
 
-Promote production-grade Worker persistence provider (explicitly scoped promotion, for example KV/D1 adapter block) to make `GET /runs/{run_id}` stable across requests:
+Promote next runtime capabilities only if explicitly needed (for example D1 history/query layer), while preserving current `RunStore` boundary:
 
-1. define provider-specific storage adapter boundary for Worker runtime.
-2. keep HTTP adapter-only ownership unchanged.
-3. re-run deployed smoke including run-status retrieval consistency.
+1. keep KV adapter for simple lookup by `run_id`.
+2. introduce D1 only when relational query/history is explicitly required.
+3. keep HTTP adapter-only ownership unchanged.

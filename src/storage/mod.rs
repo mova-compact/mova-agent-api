@@ -5,6 +5,7 @@
 
 use crate::evidence::EvidenceResponse;
 use crate::observation::ObservationRecord;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -33,9 +34,11 @@ impl StorageError {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
 pub trait RunStore: Send + Sync {
-    fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError>;
-    fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError>;
+    async fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError>;
+    async fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,8 +95,10 @@ impl InMemoryRunStore {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
 impl RunStore for InMemoryRunStore {
-    fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError> {
+    async fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError> {
         let mut guard = self
             .runs
             .lock()
@@ -102,7 +107,7 @@ impl RunStore for InMemoryRunStore {
         Ok(())
     }
 
-    fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
+    async fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
         let guard = self
             .runs
             .lock()
@@ -128,8 +133,10 @@ impl FileBackedRunStore {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
 impl RunStore for FileBackedRunStore {
-    fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError> {
+    async fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError> {
         let path = self.run_path(&snapshot.run_id);
         let bytes = serde_json::to_vec_pretty(&snapshot)
             .map_err(|err| StorageError::new("storage_serialize_failed", &format!("serialize failed: {err}")))?;
@@ -141,7 +148,7 @@ impl RunStore for FileBackedRunStore {
         Ok(())
     }
 
-    fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
+    async fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
         let path = self.run_path(run_id);
         if !Path::new(&path).exists() {
             return Ok(None);
@@ -172,6 +179,51 @@ pub fn create_run_store(config: &StorageConfig) -> Box<dyn RunStore> {
     }
 }
 
+#[cfg(feature = "cloudflare_worker")]
+pub struct CloudflareKvRunStore {
+    kv: worker::kv::KvStore,
+}
+
+#[cfg(feature = "cloudflare_worker")]
+impl CloudflareKvRunStore {
+    pub fn new(kv: worker::kv::KvStore) -> Self {
+        Self { kv }
+    }
+
+    fn key_for(run_id: &str) -> String {
+        format!("run_snapshot:{run_id}")
+    }
+}
+
+#[cfg(feature = "cloudflare_worker")]
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl RunStore for CloudflareKvRunStore {
+    async fn put_snapshot(&self, snapshot: RunSnapshot) -> Result<(), StorageError> {
+        let key = Self::key_for(&snapshot.run_id);
+        let body = serde_json::to_string(&snapshot)
+            .map_err(|err| StorageError::new("storage_serialize_failed", &format!("serialize failed: {err}")))?;
+        self.kv
+            .put(&key, body)
+            .map_err(|err| StorageError::new("storage_write_failed", &format!("kv put build failed: {err}")))?
+            .execute()
+            .await
+            .map_err(|err| StorageError::new("storage_write_failed", &format!("kv put execute failed: {err}")))?;
+        Ok(())
+    }
+
+    async fn get_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
+        let key = Self::key_for(run_id);
+        let data = self
+            .kv
+            .get(&key)
+            .json::<RunSnapshot>()
+            .await
+            .map_err(|err| StorageError::new("storage_read_failed", &format!("kv get failed: {err}")))?;
+        Ok(data)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FailingRunStore {
     err: StorageError,
@@ -183,12 +235,14 @@ impl FailingRunStore {
     }
 }
 
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
 impl RunStore for FailingRunStore {
-    fn put_snapshot(&self, _snapshot: RunSnapshot) -> Result<(), StorageError> {
+    async fn put_snapshot(&self, _snapshot: RunSnapshot) -> Result<(), StorageError> {
         Err(self.err.clone())
     }
 
-    fn get_snapshot(&self, _run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
+    async fn get_snapshot(&self, _run_id: &str) -> Result<Option<RunSnapshot>, StorageError> {
         Err(self.err.clone())
     }
 }
@@ -228,18 +282,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn in_memory_store_roundtrip_snapshot() {
+    #[tokio::test]
+    async fn in_memory_store_roundtrip_snapshot() {
         let store = InMemoryRunStore::new();
         let snapshot = sample_snapshot("run_mem_01");
-        store.put_snapshot(snapshot.clone()).unwrap();
-        let read = store.get_snapshot("run_mem_01").unwrap().unwrap();
+        store.put_snapshot(snapshot.clone()).await.unwrap();
+        let read = store.get_snapshot("run_mem_01").await.unwrap().unwrap();
         assert_eq!(read.run_id, "run_mem_01");
         assert_eq!(read.evidence.trace_ref, "trace:run_mem_01");
     }
 
-    #[test]
-    fn file_backed_store_roundtrip_snapshot() {
+    #[tokio::test]
+    async fn file_backed_store_roundtrip_snapshot() {
         let unique = format!(
             "mova_agent_api_storage_test_{}",
             std::time::SystemTime::now()
@@ -250,8 +304,8 @@ mod tests {
         let dir = std::env::temp_dir().join(unique);
         let store = FileBackedRunStore::new(dir.clone()).unwrap();
         let snapshot = sample_snapshot("run_file_01");
-        store.put_snapshot(snapshot).unwrap();
-        let read = store.get_snapshot("run_file_01").unwrap().unwrap();
+        store.put_snapshot(snapshot).await.unwrap();
+        let read = store.get_snapshot("run_file_01").await.unwrap().unwrap();
         assert_eq!(read.run_id, "run_file_01");
         assert_eq!(read.observations.len(), 1);
         let _ = fs::remove_dir_all(dir);

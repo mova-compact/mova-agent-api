@@ -441,6 +441,7 @@ dependencies = [
 name = "mova-agent-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "serde",
  "serde_json",
