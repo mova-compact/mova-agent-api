@@ -208,6 +208,58 @@ async fn get_run_evidence_returns_evidence_for_created_run() {
 }
 
 #[tokio::test]
+async fn get_run_and_evidence_are_status_consistent() {
+    let app = router();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::OK);
+    let run_body = to_bytes(run_response.into_body(), usize::MAX).await.unwrap();
+    let run_json: Value = serde_json::from_slice(&run_body).unwrap();
+
+    let evidence_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence_response.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence_response.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+
+    assert_eq!(run_json["status"], evidence_json["status"]);
+    assert_eq!(
+        run_json["observation_count"],
+        serde_json::json!(evidence_json["observation_refs"].as_array().unwrap().len())
+    );
+}
+
+#[tokio::test]
 async fn get_run_evidence_returns_not_found_error_shape() {
     let app = router();
     let response = app

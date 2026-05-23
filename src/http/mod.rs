@@ -37,7 +37,6 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RunSnapshot {
     run_id: String,
-    status: RunStatus,
     evidence: EvidenceResponse,
 }
 
@@ -240,7 +239,6 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
 
     let snapshot = RunSnapshot {
         run_id: run_id.clone(),
-        status: RunStatus::Completed,
         evidence,
     };
     let trace_ref = snapshot.evidence.trace_ref.clone();
@@ -266,7 +264,7 @@ async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> i
             StatusCode::OK,
             Json(RunStatusResponse {
                 run_id: snapshot.run_id.clone(),
-                status: snapshot.status.as_str().to_string(),
+                status: snapshot.evidence.status.as_str().to_string(),
                 trace_ref: snapshot.evidence.trace_ref.clone(),
                 observation_count: snapshot.evidence.observation_refs.len(),
             }),
