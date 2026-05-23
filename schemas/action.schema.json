@@ -46,7 +46,7 @@
       "minLength": 1
     }
   },
-  "anyOf": [
+  "oneOf": [
     {
       "required": [
         "input_ref"
@@ -59,4 +59,3 @@
     }
   ]
 }
-

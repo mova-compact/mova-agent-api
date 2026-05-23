@@ -7,7 +7,7 @@ use crate::evidence::{build_evidence_response, EvidenceResponse, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
-use crate::request::parse_request_envelope;
+use crate::request::{parse_request_envelope, validate_request_envelope, RequestValidationError};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -54,6 +54,18 @@ struct RunStatusResponse {
     status: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ErrorResponse {
+    error: ApiError,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ApiError {
+    code: String,
+    message: String,
+    details: Vec<String>,
+}
+
 pub fn router() -> Router {
     router_with_state(AppState::new())
 }
@@ -90,37 +102,86 @@ async fn get_capabilities() -> Json<CapabilitiesResponse> {
 
 async fn post_actions_validate(Json(payload): Json<Value>) -> impl IntoResponse {
     match parse_request_envelope(payload) {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(ValidateResponse {
-                valid: true,
-                errors: Vec::new(),
-            }),
-        ),
+        Ok(envelope) => {
+            let semantic_errors = validate_request_envelope(&envelope);
+            if semantic_errors.is_empty() {
+                (
+                    StatusCode::OK,
+                    Json(ValidateResponse {
+                        valid: true,
+                        errors: Vec::new(),
+                    }),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ValidateResponse {
+                        valid: false,
+                        errors: semantic_errors
+                            .iter()
+                            .map(render_validation_error)
+                            .collect::<Vec<_>>(),
+                    }),
+                )
+            }
+        }
         Err(err) => (
             StatusCode::BAD_REQUEST,
             Json(ValidateResponse {
                 valid: false,
-                errors: vec![err.to_string()],
+                errors: vec![format!("payload: {err}")],
             }),
         ),
     }
 }
 
+fn bad_request(code: &str, message: &str, details: Vec<String>) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: ApiError {
+                code: code.to_string(),
+                message: message.to_string(),
+                details,
+            },
+        }),
+    )
+}
+
+fn not_found_run(run_id: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: ApiError {
+                code: "run_not_found".to_string(),
+                message: "run was not found".to_string(),
+                details: vec![format!("run_id: {run_id}")],
+            },
+        }),
+    )
+}
+
+fn render_validation_error(error: &RequestValidationError) -> String {
+    format!("{}: {}", error.field, error.message)
+}
+
 async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Value>) -> impl IntoResponse {
     let envelope = match parse_request_envelope(payload) {
         Ok(value) => value,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "validation_failed",
-                    "message": err.to_string()
-                })),
-            )
-                .into_response();
-        }
+        Err(err) => return bad_request("validation_failed", "request parsing failed", vec![format!("payload: {err}")]).into_response(),
     };
+    let semantic_errors = validate_request_envelope(&envelope);
+    if !semantic_errors.is_empty() {
+        return bad_request(
+            "validation_failed",
+            "request validation failed",
+            semantic_errors
+                .iter()
+                .map(render_validation_error)
+                .collect::<Vec<_>>(),
+        )
+        .into_response();
+    }
 
     let run_id = format!("run_{}", envelope.request_id);
     let admission = PolicyAdmission::new(
@@ -170,7 +231,7 @@ async fn post_actions_run(State(state): State<AppState>, Json(payload): Json<Val
         StatusCode::ACCEPTED,
         Json(RunResponse {
             run_id,
-            status: "completed".to_string(),
+            status: RunStatus::Completed.as_str().to_string(),
         }),
     )
         .into_response()
@@ -183,18 +244,11 @@ async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> i
             StatusCode::OK,
             Json(RunStatusResponse {
                 run_id: snapshot.run_id.clone(),
-                status: "completed".to_string(),
+                status: snapshot.status.as_str().to_string(),
             }),
         )
             .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "run_not_found",
-                "run_id": run_id
-            })),
-        )
-            .into_response(),
+        None => not_found_run(&run_id).into_response(),
     }
 }
 
@@ -202,13 +256,6 @@ async fn get_run_evidence(State(state): State<AppState>, Path(run_id): Path<Stri
     let runs = state.runs.lock().expect("state mutex poisoned");
     match runs.get(&run_id) {
         Some(snapshot) => (StatusCode::OK, Json(snapshot.evidence.clone())).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "run_not_found",
-                "run_id": run_id
-            })),
-        )
-            .into_response(),
+        None => not_found_run(&run_id).into_response(),
     }
 }

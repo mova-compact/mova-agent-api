@@ -1,6 +1,7 @@
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use mova_agent_api::http::router;
+use serde_json::Value;
 use tower::util::ServiceExt;
 
 fn minimal_request_body() -> String {
@@ -40,6 +41,10 @@ async fn get_capabilities_returns_v0_metadata() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["action_types"].is_array());
+    assert!(json["policy_decisions"].is_array());
 }
 
 #[tokio::test]
@@ -58,6 +63,9 @@ async fn post_actions_validate_accepts_minimal_request() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["valid"], true);
 }
 
 #[tokio::test]
@@ -76,6 +84,10 @@ async fn post_actions_validate_returns_clear_validation_error() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["valid"], false);
+    assert!(json["errors"].is_array());
 }
 
 #[tokio::test]
@@ -94,6 +106,10 @@ async fn post_actions_run_creates_deterministic_run() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["run_id"], "run_req_http_01");
+    assert_eq!(json["status"], "completed");
 }
 
 #[tokio::test]
@@ -124,6 +140,10 @@ async fn get_run_returns_status_for_created_run() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["run_id"], "run_req_http_01");
+    assert_eq!(json["status"], "completed");
 }
 
 #[tokio::test]
@@ -154,4 +174,49 @@ async fn get_run_evidence_returns_evidence_for_created_run() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["run_id"], "run_req_http_01");
+    assert_eq!(json["trace_ref"], "trace:req_http_01");
+}
+
+#[tokio::test]
+async fn get_run_returns_not_found_error_shape() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "run_not_found");
+}
+
+#[tokio::test]
+async fn post_actions_run_returns_validation_error_shape() {
+    let app = router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"request_id":"req_bad"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "validation_failed");
 }

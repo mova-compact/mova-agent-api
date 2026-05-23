@@ -19,6 +19,18 @@ pub enum RunStatus {
     Blocked,
 }
 
+impl RunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceResponse {
     pub run_id: String,
@@ -108,4 +120,3 @@ mod tests {
         assert_eq!(value, "\"in_progress\"");
     }
 }
-

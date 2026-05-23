@@ -58,6 +58,12 @@ paths:
                     type: array
                     items:
                       type: string
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /actions/run:
     post:
       summary: Run a single admitted action via flat path
@@ -84,6 +90,12 @@ paths:
                     type: string
                   status:
                     type: string
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /runs/{run_id}:
     get:
       summary: Get run status and summary
@@ -110,6 +122,12 @@ paths:
                     type: string
                   status:
                     type: string
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /runs/{run_id}/evidence:
     get:
       summary: Get run evidence response
@@ -127,6 +145,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EvidenceResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     Action:
@@ -156,6 +180,11 @@ components:
           type: object
         trace_ref:
           type: string
+      oneOf:
+        - required:
+            - input_ref
+        - required:
+            - input_payload
     RequestEnvelope:
       type: object
       additionalProperties: false
@@ -256,3 +285,27 @@ components:
             type: string
         policy_summary:
           $ref: "#/components/schemas/PolicySummary"
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - details
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
