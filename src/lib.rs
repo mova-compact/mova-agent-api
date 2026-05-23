@@ -10,3 +10,4 @@ pub mod http;
 pub mod observation;
 pub mod policy;
 pub mod request;
+pub mod storage;

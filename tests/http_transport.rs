@@ -2,6 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use mova_agent_api::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
 use mova_agent_api::http::{router, router_with_state, AppState};
+use mova_agent_api::storage::{create_run_store, FailingRunStore, RunStore, StorageConfig, StorageError};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::util::ServiceExt;
@@ -363,6 +364,117 @@ async fn post_actions_run_uses_explicit_invalid_verifier_config_path() {
             .iter()
             .any(|d| d.as_str().unwrap().contains("auth_unverified"))
     );
+}
+
+#[tokio::test]
+async fn post_actions_run_returns_storage_unavailable_on_write_failure() {
+    let auth_verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&AuthTrustConfig::default_v0()));
+    let failing_store: Arc<dyn RunStore> = Arc::new(FailingRunStore::new(StorageError {
+        code: "storage_write_failed".to_string(),
+        message: "simulated write failure".to_string(),
+    }));
+    let app = router_with_state(AppState::with_auth_and_store(auth_verifier, failing_store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "storage_unavailable");
+}
+
+#[tokio::test]
+async fn get_run_returns_storage_unavailable_on_read_failure() {
+    let auth_verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&AuthTrustConfig::default_v0()));
+    let failing_store: Arc<dyn RunStore> = Arc::new(FailingRunStore::new(StorageError {
+        code: "storage_read_failed".to_string(),
+        message: "simulated read failure".to_string(),
+    }));
+    let app = router_with_state(AppState::with_auth_and_store(auth_verifier, failing_store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_any")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "storage_unavailable");
+}
+
+#[tokio::test]
+async fn file_backed_store_keeps_run_evidence_consistent() {
+    let unique = format!(
+        "mova_agent_api_http_file_store_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    let auth_verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&AuthTrustConfig::default_v0()));
+    let file_store_config = StorageConfig::file_backed_local(dir.to_string_lossy().to_string());
+    let file_store: Arc<dyn RunStore> = Arc::from(create_run_store(&file_store_config));
+    let app = router_with_state(AppState::with_auth_and_store(auth_verifier, file_store));
+
+    let run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/actions/run")
+                .header("content-type", "application/json")
+                .body(Body::from(minimal_request_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::ACCEPTED);
+
+    let get_run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_run.status(), StatusCode::OK);
+    let run_body = to_bytes(get_run.into_body(), usize::MAX).await.unwrap();
+    let run_json: Value = serde_json::from_slice(&run_body).unwrap();
+
+    let get_evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/runs/run_req_http_01/evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_evidence.status(), StatusCode::OK);
+    let evidence_body = to_bytes(get_evidence.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(run_json["trace_ref"], evidence_json["trace_ref"]);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]

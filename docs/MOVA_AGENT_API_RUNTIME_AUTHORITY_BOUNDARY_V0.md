@@ -14,17 +14,18 @@ Status: active V0 boundary freeze
 - `evidence` owns response assembly.
 - No module owns cognition, orchestration, dynamic routing, or autonomous decision-making.
 
-## 2. Auth placeholder contract
+## 2. Auth contract
 
-- Current V0 exposes only an auth placeholder shape.
-- Current V0 does not enforce production auth.
-- Future auth promotion must remain policy/admission-bound, not transport-owned authority expansion.
+- Current V0 exposes placeholder and production auth contract shapes.
+- Authorization decisions remain policy-owned.
+- Transport remains metadata pass-through and does not own final authorization.
 
-## 3. In-memory retention policy
+## 3. Persistence boundary policy
 
-- Current run/evidence state is in-memory only.
-- In-memory state is test/demo retention, not durable storage.
-- No persistence backend is allowed without explicit promotion decision and tests.
+- Run/evidence persistence is adapter-owned through the storage boundary.
+- Default adapter is in-memory for local/test behavior.
+- Local file-backed adapter is allowed as offline durable adapter.
+- Production database/runtime storage integration remains forbidden without explicit promotion.
 
 ## 4. Connector side-effect guard
 
@@ -34,8 +35,7 @@ Status: active V0 boundary freeze
 
 ## 5. Stop conditions for future development
 
-- Stop before adding production auth enforcement.
-- Stop before adding durable persistence.
+- Stop before adding transport-owned authorization.
+- Stop before adding deployment-coupled production storage.
 - Stop before adding real external connector execution.
 - Stop before adding scheduling, orchestration, dynamic routing, or agent-owned decisions.
-

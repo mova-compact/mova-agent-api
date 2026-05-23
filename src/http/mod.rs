@@ -3,12 +3,13 @@
 //! This module is transport-only and delegates to existing module boundaries.
 
 use crate::connectors::build_connector_call;
-use crate::evidence::{build_evidence_response, EvidenceResponse, RunStatus};
+use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
 use crate::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
+use crate::storage::{create_run_store, RunSnapshot, RunStore, StorageConfig, StorageError};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -17,12 +18,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionMode {
-    InMemoryOnly,
+    AdapterBoundaryInMemoryDefault,
+    AdapterBoundaryFileBackedLocal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,14 +34,8 @@ pub struct AuthPlaceholder {
 
 #[derive(Clone)]
 pub struct AppState {
-    runs: Arc<Mutex<HashMap<String, RunSnapshot>>>,
+    run_store: Arc<dyn RunStore>,
     auth_verifier: Arc<dyn AuthVerifier>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RunSnapshot {
-    run_id: String,
-    evidence: EvidenceResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,21 +96,32 @@ impl AppState {
     pub fn new() -> Self {
         let config = AuthTrustConfig::default_v0();
         let verifier: Arc<dyn AuthVerifier> = Arc::from(create_auth_verifier(&config));
+        let storage = StorageConfig::in_memory_default();
+        let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&storage));
         Self {
-            runs: Arc::new(Mutex::new(HashMap::new())),
+            run_store,
             auth_verifier: verifier,
         }
     }
 
     pub fn with_auth_verifier(auth_verifier: Arc<dyn AuthVerifier>) -> Self {
+        let storage = StorageConfig::in_memory_default();
+        let run_store: Arc<dyn RunStore> = Arc::from(create_run_store(&storage));
         Self {
-            runs: Arc::new(Mutex::new(HashMap::new())),
+            run_store,
+            auth_verifier,
+        }
+    }
+
+    pub fn with_auth_and_store(auth_verifier: Arc<dyn AuthVerifier>, run_store: Arc<dyn RunStore>) -> Self {
+        Self {
+            run_store,
             auth_verifier,
         }
     }
 
     pub fn retention_mode(&self) -> RetentionMode {
-        RetentionMode::InMemoryOnly
+        RetentionMode::AdapterBoundaryInMemoryDefault
     }
 }
 
@@ -197,6 +203,22 @@ fn not_found_run(run_id: &str) -> (StatusCode, Json<ErrorResponse>) {
                 code: "run_not_found".to_string(),
                 message: "run was not found".to_string(),
                 details: vec![format!("run_id: {run_id}")],
+            },
+        }),
+    )
+}
+
+fn storage_unavailable(err: &StorageError) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            error: ApiError {
+                code: "storage_unavailable".to_string(),
+                message: "storage adapter failed".to_string(),
+                details: vec![
+                    format!("storage_code: {}", err.code),
+                    format!("storage_message: {}", err.message),
+                ],
             },
         }),
     )
@@ -286,10 +308,13 @@ async fn post_actions_run(
     let snapshot = RunSnapshot {
         run_id: run_id.clone(),
         evidence,
+        observations: journal.records().to_vec(),
     };
     let trace_ref = snapshot.evidence.trace_ref.clone();
     let observation_count = snapshot.evidence.observation_refs.len();
-    state.runs.lock().expect("state mutex poisoned").insert(run_id.clone(), snapshot);
+    if let Err(err) = state.run_store.put_snapshot(snapshot) {
+        return storage_unavailable(&err).into_response();
+    }
 
     (
         StatusCode::ACCEPTED,
@@ -351,9 +376,10 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {
-    let runs = state.runs.lock().expect("state mutex poisoned");
-    match runs.get(&run_id) {
-        Some(snapshot) => (
+    match state.run_store.get_snapshot(&run_id) {
+        Err(err) => storage_unavailable(&err).into_response(),
+        Ok(None) => not_found_run(&run_id).into_response(),
+        Ok(Some(snapshot)) => (
             StatusCode::OK,
             Json(RunStatusResponse {
                 run_id: snapshot.run_id.clone(),
@@ -363,14 +389,17 @@ async fn get_run(State(state): State<AppState>, Path(run_id): Path<String>) -> i
             }),
         )
             .into_response(),
-        None => not_found_run(&run_id).into_response(),
     }
 }
 
 async fn get_run_evidence(State(state): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {
-    let runs = state.runs.lock().expect("state mutex poisoned");
-    match runs.get(&run_id) {
-        Some(snapshot) => (StatusCode::OK, Json(snapshot.evidence.clone())).into_response(),
-        None => not_found_run(&run_id).into_response(),
+    match state.run_store.get_snapshot(&run_id) {
+        Err(err) => storage_unavailable(&err).into_response(),
+        Ok(None) => not_found_run(&run_id).into_response(),
+        Ok(Some(snapshot)) => (
+            StatusCode::OK,
+            Json(snapshot.evidence.clone()),
+        )
+            .into_response(),
     }
 }

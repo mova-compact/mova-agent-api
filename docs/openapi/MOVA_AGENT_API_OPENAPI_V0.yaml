@@ -191,6 +191,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Storage adapter unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /runs/{run_id}:
     get:
       summary: Get run status and summary
@@ -230,6 +236,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Storage adapter unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /runs/{run_id}/evidence:
     get:
       summary: Get run evidence response
@@ -249,6 +261,12 @@ paths:
                 $ref: "#/components/schemas/EvidenceResponse"
         "404":
           description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Storage adapter unavailable
           content:
             application/json:
               schema:

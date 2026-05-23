@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mova.dev/mova-agent-api/schemas/run_snapshot_record.schema.json",
+  "title": "MOVA Agent API V0 Run Snapshot Record",
+  "description": "Storage adapter record for run/evidence retrieval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "evidence",
+    "observations"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence": {
+      "$ref": "./evidence_response.schema.json"
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "./observation_record.schema.json"
+      }
+    }
+  }
+}

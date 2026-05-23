@@ -1,0 +1,38 @@
+{
+  "run_id": "run_req_http_01",
+  "evidence": {
+    "run_id": "run_req_http_01",
+    "status": "completed",
+    "result": {
+      "outcome": "skeleton"
+    },
+    "evidence": {
+      "record_count": 1
+    },
+    "trace_ref": "trace:req_http_01",
+    "observation_refs": [
+      "ev_req_http_01"
+    ],
+    "policy_summary": {
+      "decision": "allow",
+      "policy_version": "policy.default.v0",
+      "reason_code": "authorized"
+    }
+  },
+  "observations": [
+    {
+      "run_id": "run_req_http_01",
+      "step_id": "step_observation_write",
+      "event_type": "observation.write",
+      "timestamp": "2026-05-23T10:30:01Z",
+      "subject": {
+        "call_id": "call_req_http_01"
+      },
+      "result": {
+        "status": "ok"
+      },
+      "metadata": {},
+      "evidence_ref": "ev_req_http_01"
+    }
+  ]
+}

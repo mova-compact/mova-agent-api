@@ -109,7 +109,10 @@ fn connector_boundary_is_explicitly_no_side_effect() {
 #[test]
 fn run_evidence_retention_is_in_memory_only() {
     let state = AppState::new();
-    assert_eq!(state.retention_mode(), RetentionMode::InMemoryOnly);
+    assert_eq!(
+        state.retention_mode(),
+        RetentionMode::AdapterBoundaryInMemoryDefault
+    );
 }
 
 #[test]
