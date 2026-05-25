@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-05-25T09:05:00Z",
+  "result": "BLOCKED_API_COMPATIBILITY",
+  "contract_id": "barbershop.owner_report.daily.v0",
+  "base_url": "https://mova-agent-api-v0.s-myasoedov81.workers.dev",
+  "registration": {
+    "requested_method": "register contract package",
+    "current_agent_api_surface": "no dedicated /contracts/register endpoint",
+    "execution_method_used": "contract reference passed in /actions/run payload",
+    "status": "compatibility_gap"
+  },
+  "run_success_path": {
+    "request_id": "req_barber_daily_1779699676",
+    "run_id": "run_idem_idem-req_barber_daily_1779699676",
+    "validate": { "valid": true },
+    "run_status": "completed",
+    "status_lookup": "ok",
+    "evidence_lookup": "ok",
+    "connector_result": {
+      "provider": "http.generic.v1",
+      "endpoint_ref": "webhook_site_test",
+      "http_status": 200,
+      "side_effect_performed": true,
+      "attempts": 1,
+      "max_retries": 0,
+      "timeout_ms": 10000
+    }
+  },
+  "run_guard_path": {
+    "request_id": "req_barber_guard_probe_1779699733",
+    "http_status": 502,
+    "error_code": "connector_execution_failed",
+    "details": ["connector_code: endpoint_unknown"],
+    "message": "endpoint_ref is not configured in runtime allowlist"
+  },
+  "audit_markers_observed": [
+    "connector_result",
+    "policy_summary",
+    "trace_ref",
+    "observation_refs",
+    "final_status_completed"
+  ],
+  "audit_markers_missing_for_contract_level": [
+    "external_data_fetch_result",
+    "deterministic_metrics_result",
+    "anomaly_or_deviation_check_result",
+    "ai_report_draft",
+    "human_gate_decision_if_required",
+    "telegram_delivery_result",
+    "final_run_status"
+  ],
+  "blockers": [
+    "Contract package step-machine (flow step transitions including HUMAN_GATE) is not executed as first-class runtime contract in current Agent API /actions/run path.",
+    "No dedicated contract registration endpoint in current Agent API public surface; contract is carried as request payload context only."
+  ],
+  "notes": [
+    "No production secrets were used.",
+    "No customer data was used.",
+    "Guard denial was real (not mocked)."
+  ],
+  "commands_used": [
+    "GET /health",
+    "GET /ready",
+    "GET /capabilities",
+    "POST /actions/validate",
+    "POST /actions/run (success path)",
+    "GET /runs/{run_id}",
+    "GET /runs/{run_id}/evidence",
+    "POST /actions/run (guard deny path with unknown endpoint_ref)"
+  ]
+}
