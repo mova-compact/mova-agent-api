@@ -1,0 +1,60 @@
+{
+  "result": "PASS_WITH_LIMITATIONS",
+  "contract_id": "barbershop.owner_report.daily.v0",
+  "registration": {
+    "endpoint": "POST /contracts/register",
+    "mode": "inline_flow_json",
+    "metadata_included": [
+      "manifest",
+      "policy",
+      "connector_requirements",
+      "evidence_expectations",
+      "open_questions"
+    ],
+    "inspection": {
+      "list": "GET /contracts -> contains contract_id",
+      "detail": "GET /contracts/{contract_id} -> returns admitted record"
+    }
+  },
+  "runs": {
+    "guarded_reject": {
+      "run_id": "ctrun_barber_guard_01",
+      "start_status": "waiting_human",
+      "decision": "reject",
+      "terminal": "stopped_by_human_gate",
+      "telegram_delivery_executed": false
+    },
+    "guarded_approve": {
+      "run_id": "ctrun_barber_approve_01",
+      "start_status": "waiting_human",
+      "decision": "approve",
+      "terminal": "completed",
+      "telegram_delivery_executed": true
+    },
+    "safe_direct": {
+      "run_id": "ctrun_barber_safe_01",
+      "terminal": "completed",
+      "waiting_human": false
+    }
+  },
+  "evidence_markers_verified": [
+    "external_data_fetch_result",
+    "deterministic_metrics_result",
+    "anomaly_or_deviation_check_result",
+    "ai_report_draft",
+    "human_gate_decision_if_required",
+    "telegram_delivery_result",
+    "final_run_status"
+  ],
+  "limitations": [
+    "source_url currently metadata-only for admission bridge execution",
+    "human gate continuation is in-memory only"
+  ],
+  "checks": {
+    "cargo_test": "passed",
+    "validate_examples": "passed",
+    "validate_openapi": "passed",
+    "validate_all": "passed",
+    "wasm_worker_build": "passed"
+  }
+}

@@ -8,7 +8,7 @@ use crate::connectors::{
 };
 use crate::contracts::{
     extract_outcomes_map, flow_step_by_id, parse_contract_connector_requirements, parse_inline_flow_json,
-    pick_next_target, validate_admitted_contract, AdmittedContract, ContractFlowStep,
+    pick_next_target, validate_admitted_contract, AdmittedContract, ContractFlowStep, ContractRegistryError,
 };
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
@@ -65,6 +65,7 @@ struct ContractRunState {
     status: String,
     waiting_for_human: bool,
     trace_ref: String,
+    outcomes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -893,79 +894,36 @@ async fn post_contract_run(
         .map(extract_outcomes_map)
         .unwrap_or_default();
 
-    let mut current = admitted.flow.entry.clone();
-    let mut waiting_for_human = false;
-    let mut terminal: Option<String> = None;
-    let mut step_trace = Vec::new();
-
-    for _ in 0..128 {
-        let step = match flow_step_by_id(&admitted.flow, &current) {
-            Some(s) => s,
-            None => {
-                return bad_request(
-                    "contract_runtime_invalid",
-                    "flow step resolution failed",
-                    vec![format!("missing step: {current}")],
-                )
-                .into_response()
-            }
-        };
-        step_trace.push(step.id.clone());
-        if is_human_gate_step(step) {
-            waiting_for_human = true;
-            break;
+    let exec = match execute_contract_flow(&admitted, &admitted.flow.entry, &outcomes, None, true) {
+        Ok(v) => v,
+        Err(err) => {
+            return bad_request(
+                &err.code,
+                "contract runtime execution failed",
+                vec![err.message],
+            )
+            .into_response()
         }
-        let outcome = outcomes
-            .get(&step.id)
-            .map(|s| s.as_str())
-            .unwrap_or("default");
-        let target = match pick_next_target(step, outcome) {
-            Some(v) => v,
-            None => {
-                return bad_request(
-                    "contract_runtime_invalid",
-                    "step transition missing",
-                    vec![format!("step {} has no outcome {}", step.id, outcome)],
-                )
-                .into_response()
-            }
-        };
-        if let Some(next_step) = target.get("step").and_then(|v| v.as_str()) {
-            current = next_step.to_string();
-            continue;
-        }
-        if let Some(t) = target.get("terminal").and_then(|v| v.as_str()) {
-            terminal = Some(t.to_string());
-            break;
-        }
-        return bad_request(
-            "contract_runtime_invalid",
-            "step transition target invalid",
-            vec![format!("step {} target must include step or terminal", step.id)],
-        )
-        .into_response();
-    }
-
-    let status = if waiting_for_human {
-        "waiting_human".to_string()
-    } else if terminal.as_deref() == Some("completed") {
-        "completed".to_string()
-    } else {
-        terminal.clone().unwrap_or_else(|| "completed".to_string())
     };
 
     let mut journal = ObservationJournal::new();
     journal.append(ObservationRecord {
         run_id: run_id.clone(),
         step_id: "contract_flow_trace".to_string(),
-        event_type: "contract.run".to_string(),
+        event_type: "observation.write".to_string(),
         timestamp: "2026-05-23T10:30:01Z".to_string(),
-        subject: json!({"contract_id": admitted.contract_id, "current_step_id": current}),
+        subject: json!({"contract_id": admitted.contract_id, "current_step_id": exec.current_step_id}),
         result: json!({
-            "status": status,
-            "waiting_for_human": waiting_for_human,
-            "terminal": terminal,
-            "step_trace": step_trace
+            "status": exec.status,
+            "waiting_for_human": exec.waiting_for_human,
+            "terminal": exec.terminal,
+            "step_trace": exec.step_trace,
+            "connector_status": if exec.waiting_for_human { "blocked" } else { "completed" },
+            "connector_response": {
+                "provider": "contract_admission_bridge.v0",
+                "evidence_markers": exec.evidence_markers,
+                "telegram_delivery_executed": exec.telegram_executed
+            }
         }),
         metadata: json!({}),
         evidence_ref: format!("ev_{run_id}"),
@@ -973,7 +931,7 @@ async fn post_contract_run(
 
     let evidence = build_evidence_response(
         run_id.clone(),
-        if waiting_for_human {
+        if exec.waiting_for_human {
             RunStatus::Blocked
         } else {
             RunStatus::Completed
@@ -998,7 +956,7 @@ async fn post_contract_run(
         return storage_unavailable(&err).into_response();
     }
 
-    if waiting_for_human {
+    if exec.waiting_for_human {
         let mut runs = state
             .contract_runs
             .lock()
@@ -1008,10 +966,11 @@ async fn post_contract_run(
             ContractRunState {
                 run_id: run_id.clone(),
                 contract_id: contract_id.clone(),
-                current_step_id: current.clone(),
-                status: status.clone(),
+                current_step_id: exec.current_step_id.clone(),
+                status: exec.status.clone(),
                 waiting_for_human: true,
                 trace_ref: trace_ref.clone(),
+                outcomes,
             },
         );
     }
@@ -1021,9 +980,9 @@ async fn post_contract_run(
         Json(ContractRunResponse {
             run_id,
             contract_id,
-            status,
-            current_step_id: current,
-            waiting_for_human,
+            status: exec.status,
+            current_step_id: exec.current_step_id,
+            waiting_for_human: exec.waiting_for_human,
         }),
     )
         .into_response()
@@ -1063,19 +1022,68 @@ async fn post_contract_run_decision(
         }
     };
 
-    let status = if payload.decision == "approve" {
-        "completed"
-    } else {
-        "stopped_by_human_gate"
+    let admitted = {
+        let contracts = state
+            .admitted_contracts
+            .lock()
+            .expect("contract registry lock poisoned");
+        contracts.get(&run_state.contract_id).cloned()
     };
+    let admitted = match admitted {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "contract_not_found".to_string(),
+                        message: "admitted contract for run was not found".to_string(),
+                        details: vec![format!("contract_id: {}", run_state.contract_id)],
+                    },
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let exec = match execute_contract_flow(
+        &admitted,
+        &run_state.current_step_id,
+        &run_state.outcomes,
+        Some(payload.decision.as_str()),
+        false,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            return bad_request(
+                &err.code,
+                "contract continuation failed",
+                vec![err.message],
+            )
+            .into_response()
+        }
+    };
+
+    let status = exec.status.clone();
     let mut journal = ObservationJournal::new();
     journal.append(ObservationRecord {
         run_id: run_state.run_id.clone(),
         step_id: run_state.current_step_id.clone(),
-        event_type: "human.gate.decision".to_string(),
+        event_type: "observation.write".to_string(),
         timestamp: "2026-05-23T10:35:00Z".to_string(),
         subject: json!({"contract_id": run_state.contract_id}),
-        result: json!({"decision": payload.decision, "status": status}),
+        result: json!({
+            "decision": payload.decision,
+            "status": status,
+            "terminal": exec.terminal,
+            "step_trace": exec.step_trace,
+            "connector_status": "completed",
+            "connector_response": {
+                "provider": "contract_admission_bridge.v0",
+                "evidence_markers": exec.evidence_markers,
+                "telegram_delivery_executed": exec.telegram_executed
+            }
+        }),
         metadata: json!({}),
         evidence_ref: format!("ev_{}", run_state.run_id),
     });
@@ -1122,4 +1130,118 @@ fn is_human_gate_step(step: &ContractFlowStep) -> bool {
         .as_ref()
         .map(|s| s == "human_gate_escalation")
         .unwrap_or(false)
+}
+
+#[derive(Debug, Clone)]
+struct ContractExecutionResult {
+    current_step_id: String,
+    status: String,
+    waiting_for_human: bool,
+    terminal: Option<String>,
+    step_trace: Vec<String>,
+    evidence_markers: Vec<String>,
+    telegram_executed: bool,
+}
+
+fn marker_for_step(step: &ContractFlowStep) -> Option<&'static str> {
+    let step_type = step.step_type.as_deref().unwrap_or("");
+    if step_type == "external_resource_call" {
+        return Some("external_data_fetch_result");
+    }
+    if step_type == "ai_composition_step" {
+        return Some("ai_report_draft");
+    }
+    if step_type == "human_gate_escalation" {
+        return Some("human_gate_decision_if_required");
+    }
+    if step_type == "telegram_delivery" {
+        return Some("telegram_delivery_result");
+    }
+    if step_type == "deterministic_calculation" {
+        if step.id.contains("anomal") || step.id.contains("deviation") {
+            return Some("anomaly_or_deviation_check_result");
+        }
+        if step.id.contains("metric") || step.id.contains("calculate") {
+            return Some("deterministic_metrics_result");
+        }
+    }
+    None
+}
+
+fn execute_contract_flow(
+    contract: &AdmittedContract,
+    start_step_id: &str,
+    outcomes: &HashMap<String, String>,
+    forced_gate_outcome: Option<&str>,
+    pause_on_human_gate: bool,
+) -> Result<ContractExecutionResult, ContractRegistryError> {
+    let mut current = start_step_id.to_string();
+    let mut waiting_for_human = false;
+    let mut terminal: Option<String> = None;
+    let mut step_trace = Vec::new();
+    let mut evidence_markers = Vec::new();
+    let mut telegram_executed = false;
+    let mut forced_used = false;
+
+    for _ in 0..128 {
+        let step = flow_step_by_id(&contract.flow, &current).ok_or_else(|| {
+            ContractRegistryError::new(
+                "contract_runtime_invalid",
+                format!("missing step: {current}"),
+            )
+        })?;
+        step_trace.push(step.id.clone());
+        if let Some(marker) = marker_for_step(step) {
+            evidence_markers.push(marker.to_string());
+        }
+        if step.step_type.as_deref() == Some("telegram_delivery") {
+            telegram_executed = true;
+        }
+        if is_human_gate_step(step) && pause_on_human_gate && forced_gate_outcome.is_none() {
+            waiting_for_human = true;
+            break;
+        }
+        let outcome = if is_human_gate_step(step) && forced_gate_outcome.is_some() && !forced_used {
+            forced_used = true;
+            forced_gate_outcome.unwrap_or("default")
+        } else {
+            outcomes.get(&step.id).map(|s| s.as_str()).unwrap_or("default")
+        };
+        let target = pick_next_target(step, outcome).ok_or_else(|| {
+            ContractRegistryError::new(
+                "contract_runtime_invalid",
+                format!("step {} has no outcome {}", step.id, outcome),
+            )
+        })?;
+        if let Some(next_step) = target.get("step").and_then(|v| v.as_str()) {
+            current = next_step.to_string();
+            continue;
+        }
+        if let Some(t) = target.get("terminal").and_then(|v| v.as_str()) {
+            terminal = Some(t.to_string());
+            break;
+        }
+        return Err(ContractRegistryError::new(
+            "contract_runtime_invalid",
+            format!("step {} target must include step or terminal", step.id),
+        ));
+    }
+
+    let status = if waiting_for_human {
+        "waiting_human".to_string()
+    } else if terminal.as_deref() == Some("completed") {
+        "completed".to_string()
+    } else {
+        terminal.clone().unwrap_or_else(|| "completed".to_string())
+    };
+    evidence_markers.push("final_run_status".to_string());
+    Ok(ContractExecutionResult {
+        current_step_id: current,
+        status,
+        waiting_for_human,
+        terminal,
+        step_trace,
+        evidence_markers,
+        telegram_executed,
+    })
 }
