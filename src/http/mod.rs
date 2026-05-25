@@ -6,6 +6,10 @@ use crate::connectors::{
     create_connector_executor, ConnectorExecutionConfig, ConnectorExecutionError, ConnectorExecutionRequest,
     ConnectorExecutor, SideEffectIntent,
 };
+use crate::contracts::{
+    extract_outcomes_map, flow_step_by_id, parse_contract_connector_requirements, parse_inline_flow_json,
+    pick_next_target, validate_admitted_contract, AdmittedContract, ContractFlowStep,
+};
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
@@ -26,7 +30,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionMode {
@@ -47,6 +53,18 @@ pub struct AppState {
     connector_executor: Arc<dyn ConnectorExecutor>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_provider_capabilities: RuntimeProviderCapabilities,
+    admitted_contracts: Arc<Mutex<HashMap<String, AdmittedContract>>>,
+    contract_runs: Arc<Mutex<HashMap<String, ContractRunState>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContractRunState {
+    run_id: String,
+    contract_id: String,
+    current_step_id: String,
+    status: String,
+    waiting_for_human: bool,
+    trace_ref: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +96,47 @@ struct RunStatusResponse {
     observation_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegisterContractRequest {
+    contract_id: String,
+    execution_type: String,
+    source_url: Option<String>,
+    inline_flow_json: Option<Value>,
+    manifest: Option<Value>,
+    policy: Option<Value>,
+    connector_requirements: Option<Value>,
+    evidence_expectations: Option<Value>,
+    open_questions: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContractRegisterResponse {
+    contract_id: String,
+    admitted: bool,
+    mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContractSummary {
+    contract_id: String,
+    execution_type: String,
+    has_source_url: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContractRunResponse {
+    run_id: String,
+    contract_id: String,
+    status: String,
+    current_step_id: String,
+    waiting_for_human: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ContractDecisionRequest {
+    decision: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ErrorResponse {
     error: ApiError,
@@ -101,6 +160,11 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/actions/run", post(post_actions_run))
         .route("/runs/:run_id", get(get_run))
         .route("/runs/:run_id/evidence", get(get_run_evidence))
+        .route("/contracts/register", post(post_contract_register))
+        .route("/contracts", get(get_contracts))
+        .route("/contracts/:contract_id", get(get_contract))
+        .route("/contracts/:contract_id/run", post(post_contract_run))
+        .route("/contracts/runs/:run_id/decision", post(post_contract_run_decision))
         .with_state(state)
 }
 
@@ -121,6 +185,8 @@ impl AppState {
             connector_executor,
             secret_resolver,
             runtime_provider_capabilities: provider.capabilities(),
+            admitted_contracts: Arc::new(Mutex::new(HashMap::new())),
+            contract_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -142,6 +208,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            admitted_contracts: Arc::new(Mutex::new(HashMap::new())),
+            contract_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -161,6 +229,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            admitted_contracts: Arc::new(Mutex::new(HashMap::new())),
+            contract_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -181,6 +251,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            admitted_contracts: Arc::new(Mutex::new(HashMap::new())),
+            contract_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -201,6 +273,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            admitted_contracts: Arc::new(Mutex::new(HashMap::new())),
+            contract_runs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -634,4 +708,418 @@ async fn get_run_evidence(State(state): State<AppState>, Path(run_id): Path<Stri
         )
             .into_response(),
     }
+}
+
+async fn post_contract_register(
+    State(state): State<AppState>,
+    Json(payload): Json<RegisterContractRequest>,
+) -> impl IntoResponse {
+    if payload.contract_id.trim().is_empty() {
+        return bad_request(
+            "contract_registration_invalid",
+            "contract registration payload is invalid",
+            vec!["contract_id must not be empty".to_string()],
+        )
+        .into_response();
+    }
+    let has_source_url = payload
+        .source_url
+        .as_ref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let has_inline = payload.inline_flow_json.is_some();
+    if has_source_url == has_inline {
+        return bad_request(
+            "contract_registration_invalid",
+            "contract registration payload is invalid",
+            vec!["exactly one of source_url or inline_flow_json is required".to_string()],
+        )
+        .into_response();
+    }
+
+    let flow = if let Some(inline) = payload.inline_flow_json.as_ref() {
+        match parse_inline_flow_json(inline) {
+            Ok(v) => v,
+            Err(err) => {
+                return bad_request(
+                    "contract_flow_parse_failed",
+                    "inline flow parse failed",
+                    vec![err.message],
+                )
+                .into_response()
+            }
+        }
+    } else {
+        return bad_request(
+            "contract_registration_invalid",
+            "source_url admission currently requires inline_flow_json bridge mode",
+            vec!["source_url is stored as identity only in V0 bridge".to_string()],
+        )
+        .into_response();
+    };
+
+    let connector_requirements = match parse_contract_connector_requirements(payload.connector_requirements.clone()) {
+        Ok(v) => v,
+        Err(err) => {
+            return bad_request(
+                &err.code,
+                "connector requirements are invalid",
+                vec![err.message],
+            )
+            .into_response()
+        }
+    };
+
+    let admitted = AdmittedContract {
+        contract_id: payload.contract_id.clone(),
+        execution_type: payload.execution_type.clone(),
+        source_url: payload.source_url.clone(),
+        manifest: payload.manifest.clone(),
+        flow,
+        policy: payload.policy.clone(),
+        connector_requirements,
+        evidence_expectations: payload.evidence_expectations.clone(),
+        open_questions: payload.open_questions.clone(),
+    };
+    if let Err(err) = validate_admitted_contract(&admitted) {
+        return bad_request(
+            &err.code,
+            "contract admission validation failed",
+            vec![err.message],
+        )
+        .into_response();
+    }
+
+    {
+        let mut contracts = state
+            .admitted_contracts
+            .lock()
+            .expect("contract registry lock poisoned");
+        contracts.insert(admitted.contract_id.clone(), admitted);
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(ContractRegisterResponse {
+            contract_id: payload.contract_id,
+            admitted: true,
+            mode: "inline_flow_json".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn get_contracts(State(state): State<AppState>) -> impl IntoResponse {
+    let contracts = state
+        .admitted_contracts
+        .lock()
+        .expect("contract registry lock poisoned");
+    let list = contracts
+        .values()
+        .map(|c| ContractSummary {
+            contract_id: c.contract_id.clone(),
+            execution_type: c.execution_type.clone(),
+            has_source_url: c.source_url.is_some(),
+        })
+        .collect::<Vec<_>>();
+    (StatusCode::OK, Json(json!({"contracts": list}))).into_response()
+}
+
+async fn get_contract(
+    State(state): State<AppState>,
+    Path(contract_id): Path<String>,
+) -> impl IntoResponse {
+    let contracts = state
+        .admitted_contracts
+        .lock()
+        .expect("contract registry lock poisoned");
+    match contracts.get(&contract_id) {
+        Some(contract) => (StatusCode::OK, Json(contract)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "contract_not_found".to_string(),
+                    message: "contract was not found".to_string(),
+                    details: vec![format!("contract_id: {contract_id}")],
+                },
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn post_contract_run(
+    State(state): State<AppState>,
+    Path(contract_id): Path<String>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let admitted = {
+        let contracts = state
+            .admitted_contracts
+            .lock()
+            .expect("contract registry lock poisoned");
+        contracts.get(&contract_id).cloned()
+    };
+    let admitted = match admitted {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "contract_not_found".to_string(),
+                        message: "contract was not found".to_string(),
+                        details: vec![format!("contract_id: {contract_id}")],
+                    },
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("ctrun_{}", contract_id.replace('.', "_")));
+    let trace_ref = payload
+        .get("trace_ref")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("trace:{run_id}"));
+    let outcomes = payload
+        .get("input_payload")
+        .map(extract_outcomes_map)
+        .unwrap_or_default();
+
+    let mut current = admitted.flow.entry.clone();
+    let mut waiting_for_human = false;
+    let mut terminal: Option<String> = None;
+    let mut step_trace = Vec::new();
+
+    for _ in 0..128 {
+        let step = match flow_step_by_id(&admitted.flow, &current) {
+            Some(s) => s,
+            None => {
+                return bad_request(
+                    "contract_runtime_invalid",
+                    "flow step resolution failed",
+                    vec![format!("missing step: {current}")],
+                )
+                .into_response()
+            }
+        };
+        step_trace.push(step.id.clone());
+        if is_human_gate_step(step) {
+            waiting_for_human = true;
+            break;
+        }
+        let outcome = outcomes
+            .get(&step.id)
+            .map(|s| s.as_str())
+            .unwrap_or("default");
+        let target = match pick_next_target(step, outcome) {
+            Some(v) => v,
+            None => {
+                return bad_request(
+                    "contract_runtime_invalid",
+                    "step transition missing",
+                    vec![format!("step {} has no outcome {}", step.id, outcome)],
+                )
+                .into_response()
+            }
+        };
+        if let Some(next_step) = target.get("step").and_then(|v| v.as_str()) {
+            current = next_step.to_string();
+            continue;
+        }
+        if let Some(t) = target.get("terminal").and_then(|v| v.as_str()) {
+            terminal = Some(t.to_string());
+            break;
+        }
+        return bad_request(
+            "contract_runtime_invalid",
+            "step transition target invalid",
+            vec![format!("step {} target must include step or terminal", step.id)],
+        )
+        .into_response();
+    }
+
+    let status = if waiting_for_human {
+        "waiting_human".to_string()
+    } else if terminal.as_deref() == Some("completed") {
+        "completed".to_string()
+    } else {
+        terminal.clone().unwrap_or_else(|| "completed".to_string())
+    };
+
+    let mut journal = ObservationJournal::new();
+    journal.append(ObservationRecord {
+        run_id: run_id.clone(),
+        step_id: "contract_flow_trace".to_string(),
+        event_type: "contract.run".to_string(),
+        timestamp: "2026-05-23T10:30:01Z".to_string(),
+        subject: json!({"contract_id": admitted.contract_id, "current_step_id": current}),
+        result: json!({
+            "status": status,
+            "waiting_for_human": waiting_for_human,
+            "terminal": terminal,
+            "step_trace": step_trace
+        }),
+        metadata: json!({}),
+        evidence_ref: format!("ev_{run_id}"),
+    });
+
+    let evidence = build_evidence_response(
+        run_id.clone(),
+        if waiting_for_human {
+            RunStatus::Blocked
+        } else {
+            RunStatus::Completed
+        },
+        trace_ref.clone(),
+        journal.records(),
+        PolicyAdmission::new(
+            "adm_contract_run".to_string(),
+            "act_contract_run".to_string(),
+            AdmissionDecision::Allow,
+            "contract_admission_bridge_allow".to_string(),
+            "policy.default.v0".to_string(),
+        )
+        .to_summary(),
+    );
+    let snapshot = RunSnapshot {
+        run_id: run_id.clone(),
+        evidence,
+        observations: journal.records().to_vec(),
+    };
+    if let Err(err) = state.run_store.put_snapshot(snapshot).await {
+        return storage_unavailable(&err).into_response();
+    }
+
+    if waiting_for_human {
+        let mut runs = state
+            .contract_runs
+            .lock()
+            .expect("contract run lock poisoned");
+        runs.insert(
+            run_id.clone(),
+            ContractRunState {
+                run_id: run_id.clone(),
+                contract_id: contract_id.clone(),
+                current_step_id: current.clone(),
+                status: status.clone(),
+                waiting_for_human: true,
+                trace_ref: trace_ref.clone(),
+            },
+        );
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(ContractRunResponse {
+            run_id,
+            contract_id,
+            status,
+            current_step_id: current,
+            waiting_for_human,
+        }),
+    )
+        .into_response()
+}
+
+async fn post_contract_run_decision(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(payload): Json<ContractDecisionRequest>,
+) -> impl IntoResponse {
+    if payload.decision != "approve" && payload.decision != "reject" {
+        return bad_request(
+            "contract_decision_invalid",
+            "decision must be approve or reject",
+            vec![format!("decision: {}", payload.decision)],
+        )
+        .into_response();
+    }
+    let run_state = {
+        let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+        runs.remove(&run_id)
+    };
+    let run_state = match run_state {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "contract_run_not_found".to_string(),
+                        message: "contract run was not found or not waiting_human".to_string(),
+                        details: vec![format!("run_id: {run_id}")],
+                    },
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let status = if payload.decision == "approve" {
+        "completed"
+    } else {
+        "stopped_by_human_gate"
+    };
+    let mut journal = ObservationJournal::new();
+    journal.append(ObservationRecord {
+        run_id: run_state.run_id.clone(),
+        step_id: run_state.current_step_id.clone(),
+        event_type: "human.gate.decision".to_string(),
+        timestamp: "2026-05-23T10:35:00Z".to_string(),
+        subject: json!({"contract_id": run_state.contract_id}),
+        result: json!({"decision": payload.decision, "status": status}),
+        metadata: json!({}),
+        evidence_ref: format!("ev_{}", run_state.run_id),
+    });
+    let evidence = build_evidence_response(
+        run_state.run_id.clone(),
+        RunStatus::Completed,
+        run_state.trace_ref.clone(),
+        journal.records(),
+        PolicyAdmission::new(
+            "adm_contract_decision".to_string(),
+            "act_contract_decision".to_string(),
+            AdmissionDecision::Allow,
+            "contract_human_gate_decision".to_string(),
+            "policy.default.v0".to_string(),
+        )
+        .to_summary(),
+    );
+    let snapshot = RunSnapshot {
+        run_id: run_state.run_id.clone(),
+        evidence,
+        observations: journal.records().to_vec(),
+    };
+    if let Err(err) = state.run_store.put_snapshot(snapshot).await {
+        return storage_unavailable(&err).into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "run_id": run_state.run_id,
+            "contract_id": run_state.contract_id,
+            "status": status,
+            "waiting_for_human": false
+        })),
+    )
+        .into_response()
+}
+
+fn is_human_gate_step(step: &ContractFlowStep) -> bool {
+    if step.execution_mode == "HUMAN_GATE" {
+        return true;
+    }
+    step.step_type
+        .as_ref()
+        .map(|s| s == "human_gate_escalation")
+        .unwrap_or(false)
 }

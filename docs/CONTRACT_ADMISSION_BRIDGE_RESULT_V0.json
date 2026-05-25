@@ -1,0 +1,40 @@
+{
+  "result": "PASS_WITH_LIMITATIONS",
+  "contract_id": "barbershop.owner_report.daily.v0",
+  "bridge": {
+    "admission_registry": "in_memory",
+    "run_continuation_registry": "in_memory",
+    "admission_endpoints": [
+      "POST /contracts/register",
+      "GET /contracts",
+      "GET /contracts/{contract_id}"
+    ],
+    "execution_endpoints": [
+      "POST /contracts/{contract_id}/run",
+      "POST /contracts/runs/{run_id}/decision",
+      "GET /runs/{run_id}",
+      "GET /runs/{run_id}/evidence"
+    ]
+  },
+  "proof": {
+    "register_contract": "ok",
+    "list_contracts": "ok",
+    "inspect_contract": "ok",
+    "run_success_path": "ok",
+    "run_guarded_human_gate_path": "ok",
+    "human_reject_continuation": "ok",
+    "evidence_visibility": "ok"
+  },
+  "limitations": [
+    "source_url mode is accepted as identity metadata but execution currently requires inline_flow_json",
+    "human gate continuation state is in-memory only",
+    "no dynamic orchestration/planning/runtime graph expansion"
+  ],
+  "checks": {
+    "cargo_test": "passed",
+    "validate_examples": "passed",
+    "validate_openapi": "passed",
+    "validate_all": "passed",
+    "wasm_worker_build": "passed"
+  }
+}
