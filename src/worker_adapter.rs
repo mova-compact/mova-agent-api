@@ -10,6 +10,10 @@ use crate::connectors::{
     GenericHttpConnectorExecutor, GenericHttpRequest, SideEffectIntent, WebhookHttpClient, WebhookHttpResult,
     WebhookSiteConnectorExecutor,
 };
+use crate::contracts::{
+    extract_outcomes_map, flow_step_by_id, parse_contract_connector_requirements, parse_inline_flow_json,
+    pick_next_target, validate_admitted_contract, AdmittedContract, ContractFlowStep, ContractRegistryError,
+};
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
 use crate::observation::{ObservationJournal, ObservationRecord};
@@ -18,7 +22,10 @@ use crate::request::{parse_request_envelope, validate_request_envelope};
 use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use worker::wasm_bindgen::JsCast;
 use worker::wasm_bindgen::JsValue;
 use worker::wasm_bindgen_futures::JsFuture;
@@ -31,6 +38,92 @@ struct WorkerState {
     auth_verifier: Arc<dyn AuthVerifier>,
     connector_executor: Arc<dyn ConnectorExecutor>,
     denied_client_ids: Vec<String>,
+    kv_store: Option<worker::kv::KvStore>,
+    admitted_contracts: Arc<Mutex<HashMap<String, AdmittedContract>>>,
+    contract_runs: Arc<Mutex<HashMap<String, ContractRunState>>>,
+}
+
+fn shared_admitted_contracts() -> Arc<Mutex<HashMap<String, AdmittedContract>>> {
+    static CONTRACTS: OnceLock<Arc<Mutex<HashMap<String, AdmittedContract>>>> = OnceLock::new();
+    CONTRACTS
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn shared_contract_runs() -> Arc<Mutex<HashMap<String, ContractRunState>>> {
+    static RUNS: OnceLock<Arc<Mutex<HashMap<String, ContractRunState>>>> = OnceLock::new();
+    RUNS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+const CONTRACT_INDEX_KEY: &str = "contract_admit:index";
+const CONTRACT_KEY_PREFIX: &str = "contract_admit:";
+
+fn contract_kv_key(contract_id: &str) -> String {
+    format!("{CONTRACT_KEY_PREFIX}{contract_id}")
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RegisterContractRequest {
+    contract_id: String,
+    execution_type: String,
+    source_url: Option<String>,
+    inline_flow_json: Option<Value>,
+    manifest: Option<Value>,
+    policy: Option<Value>,
+    connector_requirements: Option<Value>,
+    evidence_expectations: Option<Value>,
+    open_questions: Option<Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ContractRegisterResponse {
+    contract_id: String,
+    admitted: bool,
+    mode: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ContractSummary {
+    contract_id: String,
+    execution_type: String,
+    has_source_url: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ContractRunResponse {
+    run_id: String,
+    contract_id: String,
+    status: String,
+    current_step_id: String,
+    waiting_for_human: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ContractDecisionRequest {
+    decision: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ContractRunState {
+    run_id: String,
+    contract_id: String,
+    current_step_id: String,
+    status: String,
+    waiting_for_human: bool,
+    trace_ref: String,
+    outcomes: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct ContractExecutionResult {
+    current_step_id: String,
+    status: String,
+    waiting_for_human: bool,
+    terminal: Option<String>,
+    step_trace: Vec<String>,
+    evidence_markers: Vec<String>,
+    telegram_executed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -214,9 +307,10 @@ fn state_from_env(env: &Env) -> WorkerState {
         .ok()
         .and_then(|v| v.to_string().parse::<u64>().ok())
         .filter(|v| *v > 0);
-    let run_store: Arc<dyn RunStore> = match env.kv("MOVA_RUN_STORE") {
-        Ok(kv) => Arc::new(CloudflareKvRunStore::new_with_ttl(kv, kv_ttl_seconds)),
-        Err(_) => Arc::new(crate::storage::InMemoryRunStore::new()),
+    let kv_store = env.kv("MOVA_RUN_STORE").ok();
+    let run_store: Arc<dyn RunStore> = match kv_store.clone() {
+        Some(kv) => Arc::new(CloudflareKvRunStore::new_with_ttl(kv, kv_ttl_seconds)),
+        None => Arc::new(crate::storage::InMemoryRunStore::new()),
     };
     let denied_client_ids = env
         .var("MOVA_RATE_LIMIT_DENY_CLIENTS")
@@ -293,6 +387,9 @@ fn state_from_env(env: &Env) -> WorkerState {
         auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
         connector_executor,
         denied_client_ids,
+        kv_store,
+        admitted_contracts: shared_admitted_contracts(),
+        contract_runs: shared_contract_runs(),
     }
 }
 
@@ -341,6 +438,173 @@ fn parse_json_with_limit(bytes: &[u8]) -> std::result::Result<Value, String> {
     serde_json::from_slice::<Value>(bytes).map_err(|err| format!("invalid json: {err}"))
 }
 
+fn contract_error(status: u16, code: &str, message: &str, details: Vec<String>) -> Result<Response> {
+    Response::from_json(&json!({
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details
+        }
+    }))
+    .map(|r| r.with_status(status))
+}
+
+fn is_human_gate_step(step: &ContractFlowStep) -> bool {
+    if step.execution_mode == "HUMAN_GATE" {
+        return true;
+    }
+    step.step_type
+        .as_ref()
+        .map(|s| s == "human_gate_escalation")
+        .unwrap_or(false)
+}
+
+fn marker_for_step(step: &ContractFlowStep) -> Option<&'static str> {
+    let step_type = step.step_type.as_deref().unwrap_or("");
+    if step_type == "external_resource_call" {
+        return Some("external_data_fetch_result");
+    }
+    if step_type == "ai_composition_step" {
+        return Some("ai_report_draft");
+    }
+    if step_type == "human_gate_escalation" {
+        return Some("human_gate_decision_if_required");
+    }
+    if step_type == "telegram_delivery" {
+        return Some("telegram_delivery_result");
+    }
+    if step_type == "deterministic_calculation" {
+        if step.id.contains("anomal") || step.id.contains("deviation") {
+            return Some("anomaly_or_deviation_check_result");
+        }
+        if step.id.contains("metric") || step.id.contains("calculate") {
+            return Some("deterministic_metrics_result");
+        }
+    }
+    None
+}
+
+fn execute_contract_flow(
+    contract: &AdmittedContract,
+    start_step_id: &str,
+    outcomes: &HashMap<String, String>,
+    forced_gate_outcome: Option<&str>,
+    pause_on_human_gate: bool,
+) -> std::result::Result<ContractExecutionResult, ContractRegistryError> {
+    let mut current = start_step_id.to_string();
+    let mut waiting_for_human = false;
+    let mut terminal: Option<String> = None;
+    let mut step_trace = Vec::new();
+    let mut evidence_markers = Vec::new();
+    let mut telegram_executed = false;
+    let mut forced_used = false;
+
+    for _ in 0..128 {
+        let step = flow_step_by_id(&contract.flow, &current).ok_or_else(|| {
+            ContractRegistryError::new(
+                "contract_runtime_invalid",
+                format!("missing step: {current}"),
+            )
+        })?;
+        step_trace.push(step.id.clone());
+        if let Some(marker) = marker_for_step(step) {
+            evidence_markers.push(marker.to_string());
+        }
+        if step.step_type.as_deref() == Some("telegram_delivery") {
+            telegram_executed = true;
+        }
+        if is_human_gate_step(step) && pause_on_human_gate && forced_gate_outcome.is_none() {
+            waiting_for_human = true;
+            break;
+        }
+        let outcome = if is_human_gate_step(step) && forced_gate_outcome.is_some() && !forced_used {
+            forced_used = true;
+            forced_gate_outcome.unwrap_or("default")
+        } else {
+            outcomes.get(&step.id).map(|s| s.as_str()).unwrap_or("default")
+        };
+        let target = pick_next_target(step, outcome).ok_or_else(|| {
+            ContractRegistryError::new(
+                "contract_runtime_invalid",
+                format!("step {} has no outcome {}", step.id, outcome),
+            )
+        })?;
+        if let Some(next_step) = target.get("step").and_then(|v| v.as_str()) {
+            current = next_step.to_string();
+            continue;
+        }
+        if let Some(t) = target.get("terminal").and_then(|v| v.as_str()) {
+            terminal = Some(t.to_string());
+            break;
+        }
+        return Err(ContractRegistryError::new(
+            "contract_runtime_invalid",
+            format!("step {} target must include step or terminal", step.id),
+        ));
+    }
+
+    let status = if waiting_for_human {
+        "waiting_human".to_string()
+    } else if terminal.as_deref() == Some("completed") {
+        "completed".to_string()
+    } else {
+        terminal.clone().unwrap_or_else(|| "completed".to_string())
+    };
+    evidence_markers.push("final_run_status".to_string());
+    Ok(ContractExecutionResult {
+        current_step_id: current,
+        status,
+        waiting_for_human,
+        terminal,
+        step_trace,
+        evidence_markers,
+        telegram_executed,
+    })
+}
+
+async fn kv_upsert_contract(kv: &worker::kv::KvStore, contract: &AdmittedContract) -> std::result::Result<(), String> {
+    let key = contract_kv_key(&contract.contract_id);
+    let payload = serde_json::to_string(contract).map_err(|e| format!("serialize contract failed: {e}"))?;
+    kv.put(&key, payload)
+        .map_err(|e| format!("kv put build failed: {e}"))?
+        .execute()
+        .await
+        .map_err(|e| format!("kv put execute failed: {e}"))?;
+
+    let mut ids = kv
+        .get(CONTRACT_INDEX_KEY)
+        .json::<Vec<String>>()
+        .await
+        .map_err(|e| format!("kv get index failed: {e}"))?
+        .unwrap_or_default();
+    if !ids.iter().any(|v| v == &contract.contract_id) {
+        ids.push(contract.contract_id.clone());
+    }
+    let index_payload = serde_json::to_string(&ids).map_err(|e| format!("serialize contract index failed: {e}"))?;
+    kv.put(CONTRACT_INDEX_KEY, index_payload)
+        .map_err(|e| format!("kv put index build failed: {e}"))?
+        .execute()
+        .await
+        .map_err(|e| format!("kv put index execute failed: {e}"))?;
+    Ok(())
+}
+
+async fn kv_get_contract(kv: &worker::kv::KvStore, contract_id: &str) -> std::result::Result<Option<AdmittedContract>, String> {
+    kv.get(&contract_kv_key(contract_id))
+        .json::<AdmittedContract>()
+        .await
+        .map_err(|e| format!("kv get contract failed: {e}"))
+}
+
+async fn kv_list_contract_ids(kv: &worker::kv::KvStore) -> std::result::Result<Vec<String>, String> {
+    Ok(kv
+        .get(CONTRACT_INDEX_KEY)
+        .json::<Vec<String>>()
+        .await
+        .map_err(|e| format!("kv get index failed: {e}"))?
+        .unwrap_or_default())
+}
+
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -348,6 +612,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let state_run = Arc::clone(&state);
     let state_get_run = Arc::clone(&state);
     let state_get_evidence = Arc::clone(&state);
+    let state_contract_register = Arc::clone(&state);
+    let state_contracts = Arc::clone(&state);
+    let state_contract = Arc::clone(&state);
+    let state_contract_run = Arc::clone(&state);
+    let state_contract_decision = Arc::clone(&state);
     Router::new()
         .get_async("/health", |_req, _ctx| async move {
             Response::from_json(&json!({
@@ -385,6 +654,422 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     "supports_live_deploy_binding": true
                 }
             }))
+        })
+        .post_async("/contracts/register", move |mut req, _ctx| {
+            let state = Arc::clone(&state_contract_register);
+            async move {
+                let body = req.bytes().await?;
+                let payload = match parse_json_with_limit(&body) {
+                    Ok(v) => v,
+                    Err(message) if message.starts_with("body too large") => {
+                        return contract_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+                    }
+                    Err(message) => {
+                        return contract_error(400, "validation_failed", "request parsing failed", vec![message]);
+                    }
+                };
+                let payload: RegisterContractRequest = match serde_json::from_value(payload) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return contract_error(400, "contract_register_invalid", "invalid register payload", vec![err.to_string()]);
+                    }
+                };
+                let flow = match payload.inline_flow_json {
+                    Some(v) => match parse_inline_flow_json(&v) {
+                        Ok(flow) => flow,
+                        Err(err) => {
+                            return contract_error(400, &err.code, "inline_flow_json parsing failed", vec![err.message]);
+                        }
+                    },
+                    None => {
+                        return contract_error(
+                            400,
+                            "contract_register_missing_flow",
+                            "inline_flow_json is required in this bridge mode",
+                            vec!["source_url ingestion is not enabled in worker adapter".to_string()],
+                        );
+                    }
+                };
+                let connector_requirements = match parse_contract_connector_requirements(payload.connector_requirements) {
+                    Ok(c) => c,
+                    Err(err) => {
+                        return contract_error(400, &err.code, "connector requirements are invalid", vec![err.message]);
+                    }
+                };
+                let admitted = AdmittedContract {
+                    contract_id: payload.contract_id.clone(),
+                    execution_type: payload.execution_type.clone(),
+                    source_url: payload.source_url.clone(),
+                    manifest: payload.manifest.clone(),
+                    flow,
+                    policy: payload.policy.clone(),
+                    connector_requirements,
+                    evidence_expectations: payload.evidence_expectations.clone(),
+                    open_questions: payload.open_questions.clone(),
+                };
+                if let Err(err) = validate_admitted_contract(&admitted) {
+                    return contract_error(400, &err.code, "contract admission validation failed", vec![err.message]);
+                }
+                {
+                    let mut contracts = state
+                        .admitted_contracts
+                        .lock()
+                        .expect("contract registry lock poisoned");
+                    contracts.insert(admitted.contract_id.clone(), admitted);
+                }
+                if let Some(kv) = &state.kv_store {
+                    if let Some(saved) = state
+                        .admitted_contracts
+                        .lock()
+                        .expect("contract registry lock poisoned")
+                        .get(&payload.contract_id)
+                        .cloned()
+                    {
+                        if let Err(err) = kv_upsert_contract(kv, &saved).await {
+                            return contract_error(503, "storage_unavailable", "contract registry persistence failed", vec![err]);
+                        }
+                    }
+                }
+                Response::from_json(&ContractRegisterResponse {
+                    contract_id: payload.contract_id,
+                    admitted: true,
+                    mode: "inline_flow_json".to_string(),
+                })
+                .map(|r| r.with_status(201))
+            }
+        })
+        .get_async("/contracts", move |_req, _ctx| {
+            let state = Arc::clone(&state_contracts);
+            async move {
+                let contracts = state
+                    .admitted_contracts
+                    .lock()
+                    .expect("contract registry lock poisoned");
+                let mut list = contracts
+                    .values()
+                    .map(|c| ContractSummary {
+                        contract_id: c.contract_id.clone(),
+                        execution_type: c.execution_type.clone(),
+                        has_source_url: c.source_url.is_some(),
+                    })
+                    .collect::<Vec<_>>();
+                drop(contracts);
+                if list.is_empty() {
+                    if let Some(kv) = &state.kv_store {
+                        if let Ok(ids) = kv_list_contract_ids(kv).await {
+                            for id in ids {
+                                if let Ok(Some(c)) = kv_get_contract(kv, &id).await {
+                                    list.push(ContractSummary {
+                                        contract_id: c.contract_id,
+                                        execution_type: c.execution_type,
+                                        has_source_url: c.source_url.is_some(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Response::from_json(&json!({ "contracts": list }))
+            }
+        })
+        .get_async("/contracts/:contract_id", move |_req, ctx| {
+            let state = Arc::clone(&state_contract);
+            async move {
+                let contract_id = ctx.param("contract_id").cloned().unwrap_or_default();
+                let contracts = state
+                    .admitted_contracts
+                    .lock()
+                    .expect("contract registry lock poisoned");
+                match contracts.get(&contract_id) {
+                    Some(contract) => Response::from_json(contract),
+                    None => {
+                        drop(contracts);
+                        if let Some(kv) = &state.kv_store {
+                            match kv_get_contract(kv, &contract_id).await {
+                                Ok(Some(contract)) => {
+                                    return Response::from_json(&contract);
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]);
+                                }
+                            }
+                        }
+                        contract_error(
+                            404,
+                            "contract_not_found",
+                            "contract was not found",
+                            vec![format!("contract_id: {contract_id}")],
+                        )
+                    }
+                }
+            }
+        })
+        .post_async("/contracts/:contract_id/run", move |mut req, ctx| {
+            let state = Arc::clone(&state_contract_run);
+            async move {
+                let contract_id = ctx.param("contract_id").cloned().unwrap_or_default();
+                let admitted = {
+                    let contracts = state
+                        .admitted_contracts
+                        .lock()
+                        .expect("contract registry lock poisoned");
+                    contracts.get(&contract_id).cloned()
+                };
+                let admitted = match admitted {
+                    Some(c) => c,
+                    None => {
+                        if let Some(kv) = &state.kv_store {
+                            match kv_get_contract(kv, &contract_id).await {
+                                Ok(Some(c)) => c,
+                                Ok(None) => {
+                                    return contract_error(
+                                        404,
+                                        "contract_not_found",
+                                        "contract was not found",
+                                        vec![format!("contract_id: {contract_id}")],
+                                    );
+                                }
+                                Err(err) => {
+                                    return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]);
+                                }
+                            }
+                        } else {
+                            return contract_error(
+                                404,
+                                "contract_not_found",
+                                "contract was not found",
+                                vec![format!("contract_id: {contract_id}")],
+                            );
+                        }
+                    }
+                };
+                let body = req.bytes().await?;
+                let payload = if body.is_empty() {
+                    json!({})
+                } else {
+                    match parse_json_with_limit(&body) {
+                        Ok(v) => v,
+                        Err(message) if message.starts_with("body too large") => {
+                            return contract_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+                        }
+                        Err(message) => {
+                            return contract_error(400, "validation_failed", "request parsing failed", vec![message]);
+                        }
+                    }
+                };
+                let run_id = payload
+                    .get("run_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("ctrun_{}", contract_id.replace('.', "_")));
+                let trace_ref = payload
+                    .get("trace_ref")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("trace:{run_id}"));
+                let outcomes = payload
+                    .get("input_payload")
+                    .map(extract_outcomes_map)
+                    .unwrap_or_default();
+                let exec = match execute_contract_flow(&admitted, &admitted.flow.entry, &outcomes, None, true) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return contract_error(400, &err.code, "contract runtime execution failed", vec![err.message]);
+                    }
+                };
+                let mut journal = ObservationJournal::new();
+                journal.append(ObservationRecord {
+                    run_id: run_id.clone(),
+                    step_id: "contract_flow_trace".to_string(),
+                    event_type: "observation.write".to_string(),
+                    timestamp: "2026-05-23T10:30:01Z".to_string(),
+                    subject: json!({"contract_id": admitted.contract_id, "current_step_id": exec.current_step_id}),
+                    result: json!({
+                        "status": exec.status,
+                        "waiting_for_human": exec.waiting_for_human,
+                        "terminal": exec.terminal,
+                        "step_trace": exec.step_trace,
+                        "connector_status": if exec.waiting_for_human { "blocked" } else { "completed" },
+                        "connector_response": {
+                            "provider": "contract_admission_bridge.v0",
+                            "evidence_markers": exec.evidence_markers,
+                            "telegram_delivery_executed": exec.telegram_executed
+                        }
+                    }),
+                    metadata: json!({}),
+                    evidence_ref: format!("ev_{run_id}"),
+                });
+                let evidence = build_evidence_response(
+                    run_id.clone(),
+                    if exec.waiting_for_human { RunStatus::Blocked } else { RunStatus::Completed },
+                    trace_ref.clone(),
+                    journal.records(),
+                    PolicyAdmission::new(
+                        "adm_contract_run".to_string(),
+                        "act_contract_run".to_string(),
+                        AdmissionDecision::Allow,
+                        "contract_admission_bridge_allow".to_string(),
+                        "policy.default.v0".to_string(),
+                    )
+                    .to_summary(),
+                );
+                let snapshot = RunSnapshot {
+                    run_id: run_id.clone(),
+                    evidence,
+                    observations: journal.records().to_vec(),
+                };
+                if let Err(err) = state.run_store.put_snapshot(snapshot).await {
+                    return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
+                }
+                if exec.waiting_for_human {
+                    let mut runs = state
+                        .contract_runs
+                        .lock()
+                        .expect("contract run lock poisoned");
+                    runs.insert(
+                        run_id.clone(),
+                        ContractRunState {
+                            run_id: run_id.clone(),
+                            contract_id: contract_id.clone(),
+                            current_step_id: exec.current_step_id.clone(),
+                            status: exec.status.clone(),
+                            waiting_for_human: true,
+                            trace_ref,
+                            outcomes,
+                        },
+                    );
+                }
+                Response::from_json(&ContractRunResponse {
+                    run_id,
+                    contract_id,
+                    status: exec.status,
+                    current_step_id: exec.current_step_id,
+                    waiting_for_human: exec.waiting_for_human,
+                })
+                .map(|r| r.with_status(202))
+            }
+        })
+        .post_async("/contracts/runs/:run_id/decision", move |mut req, ctx| {
+            let state = Arc::clone(&state_contract_decision);
+            async move {
+                let run_id = ctx.param("run_id").cloned().unwrap_or_default();
+                let body = req.bytes().await?;
+                let payload = match parse_json_with_limit(&body) {
+                    Ok(v) => v,
+                    Err(message) => return contract_error(400, "validation_failed", "request parsing failed", vec![message]),
+                };
+                let payload: ContractDecisionRequest = match serde_json::from_value(payload) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return contract_error(400, "contract_decision_invalid", "invalid decision payload", vec![err.to_string()]);
+                    }
+                };
+                if payload.decision != "approve" && payload.decision != "reject" {
+                    return contract_error(
+                        400,
+                        "contract_decision_invalid",
+                        "decision must be approve or reject",
+                        vec![format!("decision: {}", payload.decision)],
+                    );
+                }
+                let run_state = {
+                    let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                    runs.remove(&run_id)
+                };
+                let run_state = match run_state {
+                    Some(v) => v,
+                    None => {
+                        return contract_error(
+                            404,
+                            "contract_run_not_found",
+                            "contract run was not found or not waiting_human",
+                            vec![format!("run_id: {run_id}")],
+                        );
+                    }
+                };
+                let admitted = {
+                    let contracts = state
+                        .admitted_contracts
+                        .lock()
+                        .expect("contract registry lock poisoned");
+                    contracts.get(&run_state.contract_id).cloned()
+                };
+                let admitted = match admitted {
+                    Some(c) => c,
+                    None => {
+                        return contract_error(
+                            404,
+                            "contract_not_found",
+                            "admitted contract for run was not found",
+                            vec![format!("contract_id: {}", run_state.contract_id)],
+                        );
+                    }
+                };
+                let exec = match execute_contract_flow(
+                    &admitted,
+                    &run_state.current_step_id,
+                    &run_state.outcomes,
+                    Some(payload.decision.as_str()),
+                    false,
+                ) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return contract_error(400, &err.code, "contract continuation failed", vec![err.message]);
+                    }
+                };
+                let status = exec.status.clone();
+                let mut journal = ObservationJournal::new();
+                journal.append(ObservationRecord {
+                    run_id: run_state.run_id.clone(),
+                    step_id: run_state.current_step_id.clone(),
+                    event_type: "observation.write".to_string(),
+                    timestamp: "2026-05-23T10:35:00Z".to_string(),
+                    subject: json!({"contract_id": run_state.contract_id}),
+                    result: json!({
+                        "decision": payload.decision,
+                        "status": status,
+                        "terminal": exec.terminal,
+                        "step_trace": exec.step_trace,
+                        "connector_status": "completed",
+                        "connector_response": {
+                            "provider": "contract_admission_bridge.v0",
+                            "evidence_markers": exec.evidence_markers,
+                            "telegram_delivery_executed": exec.telegram_executed
+                        }
+                    }),
+                    metadata: json!({}),
+                    evidence_ref: format!("ev_{}", run_state.run_id),
+                });
+                let evidence = build_evidence_response(
+                    run_state.run_id.clone(),
+                    RunStatus::Completed,
+                    run_state.trace_ref.clone(),
+                    journal.records(),
+                    PolicyAdmission::new(
+                        "adm_contract_decision".to_string(),
+                        "act_contract_decision".to_string(),
+                        AdmissionDecision::Allow,
+                        "contract_human_gate_decision".to_string(),
+                        "policy.default.v0".to_string(),
+                    )
+                    .to_summary(),
+                );
+                let snapshot = RunSnapshot {
+                    run_id: run_state.run_id.clone(),
+                    evidence,
+                    observations: journal.records().to_vec(),
+                };
+                if let Err(err) = state.run_store.put_snapshot(snapshot).await {
+                    return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
+                }
+                Response::from_json(&json!({
+                    "run_id": run_state.run_id,
+                    "contract_id": run_state.contract_id,
+                    "status": status,
+                    "waiting_for_human": false
+                }))
+            }
         })
         .post_async("/actions/validate", |mut req, _ctx| async move {
             let body = req.bytes().await?;
