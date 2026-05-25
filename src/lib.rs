@@ -7,6 +7,7 @@ pub mod contracts;
 pub mod auth;
 pub mod evidence;
 pub mod execution;
+pub mod github_file_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 pub mod observation;

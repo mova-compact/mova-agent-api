@@ -1,0 +1,14 @@
+{
+  "required_metrics": [
+    "total_revenue",
+    "visit_count",
+    "average_check",
+    "cancellations",
+    "no_shows",
+    "payment_split"
+  ],
+  "deviation_threshold_pct": 35.0,
+  "impossible_average_check_max": 500.0,
+  "require_payments_for_completed_visits": true,
+  "fallback_behavior": "require_human_gate_on_missing_required_fields"
+}

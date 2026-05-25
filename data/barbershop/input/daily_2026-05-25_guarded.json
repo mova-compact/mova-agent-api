@@ -1,0 +1,8 @@
+{
+  "date": "2026-05-25",
+  "appointments": [
+    { "id": "apt_101", "amount": 60.0, "staff_id": "barber_anna", "cancelled": false, "no_show": false },
+    { "id": "apt_102", "amount": 55.0, "staff_id": "barber_ivan", "cancelled": false, "no_show": true }
+  ],
+  "payments": []
+}

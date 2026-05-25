@@ -1,0 +1,26 @@
+{
+  "proof_version": "v0",
+  "contract_id": "barbershop.owner_report.daily.v0",
+  "mode": "local_repo_files_only",
+  "data_paths": {
+    "input": "data/barbershop/input/daily_2026-05-25.json",
+    "rules": "data/barbershop/config/metrics_rules.json",
+    "report": "data/barbershop/output/reports/owner_report_2026-05-25.md",
+    "audit": "data/barbershop/output/audit/run_<run_id>.json"
+  },
+  "flows_verified": [
+    "guarded_reject",
+    "guarded_approve",
+    "safe_completed"
+  ],
+  "evidence_markers": [
+    "external_data_fetch_result",
+    "deterministic_metrics_result",
+    "anomaly_or_deviation_check_result",
+    "ai_report_draft",
+    "human_gate_decision_if_required",
+    "telegram_delivery_result",
+    "final_run_status"
+  ],
+  "verdict": "PASS_WITH_LOCAL_GITHUB_FILE_STUB"
+}

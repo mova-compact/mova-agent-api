@@ -1,0 +1,15 @@
+{
+  "date": "2026-05-25",
+  "appointments": [
+    { "id": "apt_001", "amount": 30.0, "staff_id": "barber_anna", "cancelled": false, "no_show": false },
+    { "id": "apt_002", "amount": 25.0, "staff_id": "barber_anna", "cancelled": false, "no_show": false },
+    { "id": "apt_003", "amount": 40.0, "staff_id": "barber_ivan", "cancelled": false, "no_show": false },
+    { "id": "apt_004", "amount": 20.0, "staff_id": "barber_ivan", "cancelled": false, "no_show": false }
+  ],
+  "payments": [
+    { "id": "pay_001", "amount": 30.0, "method": "card" },
+    { "id": "pay_002", "amount": 25.0, "method": "cash" },
+    { "id": "pay_003", "amount": 40.0, "method": "card" },
+    { "id": "pay_004", "amount": 20.0, "method": "cash" }
+  ]
+}

@@ -12,6 +12,7 @@ use crate::contracts::{
 };
 use crate::evidence::{build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
+use crate::github_file_bridge::run_barbershop_file_e2e;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
@@ -31,6 +32,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -894,7 +896,7 @@ async fn post_contract_run(
         .map(extract_outcomes_map)
         .unwrap_or_default();
 
-    let exec = match execute_contract_flow(&admitted, &admitted.flow.entry, &outcomes, None, true) {
+    let mut exec = match execute_contract_flow(&admitted, &admitted.flow.entry, &outcomes, None, true) {
         Ok(v) => v,
         Err(err) => {
             return bad_request(
@@ -905,6 +907,72 @@ async fn post_contract_run(
             .into_response()
         }
     };
+
+    if admitted.contract_id == "barbershop.owner_report.daily.v0" {
+        let (input_path, rules_path, report_path, audit_path) = barbershop_default_file_paths(&run_id);
+        let telegram_live = false;
+        match run_barbershop_file_e2e(
+            &admitted.contract_id,
+            &run_id,
+            &input_path,
+            &rules_path,
+            &report_path,
+            &audit_path,
+            telegram_live,
+        ) {
+            Ok(file_result) => {
+                let mut marker_set = exec.evidence_markers.clone();
+                for m in [
+                    "external_data_fetch_result",
+                    "deterministic_metrics_result",
+                    "anomaly_or_deviation_check_result",
+                    "ai_report_draft",
+                    "telegram_delivery_result",
+                    "final_run_status",
+                ] {
+                    if !marker_set.iter().any(|x| x == m) {
+                        marker_set.push(m.to_string());
+                    }
+                }
+                if file_result.require_human_gate && !marker_set.iter().any(|x| x == "human_gate_decision_if_required") {
+                    marker_set.push("human_gate_decision_if_required".to_string());
+                }
+                exec.evidence_markers = marker_set;
+                exec.github_file_result = Some(json!({
+                    "mode": "local_repo_files_only",
+                    "input_path": input_path,
+                    "rules_path": rules_path,
+                    "report_path": file_result.report_path,
+                    "audit_path": file_result.audit_path,
+                    "flags": file_result.flags,
+                    "require_human_gate": file_result.require_human_gate,
+                    "telegram_delivery_result": file_result.telegram_delivery_result,
+                    "metrics": {
+                        "total_revenue": file_result.metrics.total_revenue,
+                        "visit_count": file_result.metrics.visit_count,
+                        "average_check": file_result.metrics.average_check,
+                        "cancellations": file_result.metrics.cancellations,
+                        "no_shows": file_result.metrics.no_shows
+                    }
+                }));
+                if file_result.require_human_gate {
+                    exec.waiting_for_human = true;
+                    exec.status = "waiting_human".to_string();
+                    if flow_step_by_id(&admitted.flow, "human_gate_escalation").is_some() {
+                        exec.current_step_id = "human_gate_escalation".to_string();
+                    }
+                }
+            }
+            Err(err) => {
+                return bad_request(
+                    &err.code,
+                    "local file execution failed",
+                    vec![err.message],
+                )
+                .into_response()
+            }
+        }
+    }
 
     let mut journal = ObservationJournal::new();
     journal.append(ObservationRecord {
@@ -922,7 +990,8 @@ async fn post_contract_run(
             "connector_response": {
                 "provider": "contract_admission_bridge.v0",
                 "evidence_markers": exec.evidence_markers,
-                "telegram_delivery_executed": exec.telegram_executed
+                "telegram_delivery_executed": exec.telegram_executed,
+                "github_file_result": exec.github_file_result
             }
         }),
         metadata: json!({}),
@@ -1141,6 +1210,7 @@ struct ContractExecutionResult {
     step_trace: Vec<String>,
     evidence_markers: Vec<String>,
     telegram_executed: bool,
+    github_file_result: Option<Value>,
 }
 
 fn marker_for_step(step: &ContractFlowStep) -> Option<&'static str> {
@@ -1243,5 +1313,28 @@ fn execute_contract_flow(
         step_trace,
         evidence_markers,
         telegram_executed,
+        github_file_result: None,
     })
+}
+
+fn barbershop_default_file_paths(run_id: &str) -> (String, String, String, String) {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join("barbershop");
+    let input = base.join("input").join("daily_2026-05-25.json");
+    let rules = base.join("config").join("metrics_rules.json");
+    let report = base
+        .join("output")
+        .join("reports")
+        .join("owner_report_2026-05-25.md");
+    let audit = base
+        .join("output")
+        .join("audit")
+        .join(format!("run_{run_id}.json"));
+    (
+        input.to_string_lossy().to_string(),
+        rules.to_string_lossy().to_string(),
+        report.to_string_lossy().to_string(),
+        audit.to_string_lossy().to_string(),
+    )
 }
