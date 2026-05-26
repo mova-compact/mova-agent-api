@@ -43,17 +43,18 @@ Health check — это быстрый ответ системы на вопро
 
 ## Проверка Telegram
 
-`Заблокировано (blocked)` для полного e2e-подтверждения чата в текущем прогоне:
+`Реальное поведение (verified)`:
 
-- добавлен воспроизводимый smoke `npm run smoke:telegram-delivery-e2e` в Cloudflare operator template;
-- smoke корректно блокируется, если в окружении запуска не заданы `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_CHAT_ID`;
-- в текущем прогоне получен именно `BLOCKED` по причине отсутствия локальных Telegram credentials.
+- e2e smoke доставки: `npm run smoke:telegram-delivery-e2e`;
+- подтверждён `PASS` (`2026-05-26`);
+- Telegram API вернул `http_status=200`, `ok=true`;
+- сообщение доставлено в `TELEGRAM_ALLOWED_CHAT_ID` (в отчёте только masked chat id).
 
 `Частично подтверждено (partially verified)`:
 
 - операторский контур отвечает `ready` с `telegram_delivery=true`;
 - `/schedule/run` выполняется и возвращает `ok=true`;
-- но это не является прямым доказательством, что оператор увидел сообщение в конкретном чате.
+- тестовое Telegram-меню реализовано в runtime-коде, но не полностью подтверждено live-deploy smoke для всех кнопок.
 
 ## Проверка MOVA API
 

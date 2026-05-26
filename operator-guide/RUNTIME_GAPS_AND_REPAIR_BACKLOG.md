@@ -68,25 +68,41 @@
 - либо добавить read-only projection привязок;
 - либо оставить это как known limitation.
 
-## Gap 5: Telegram delivery e2e blocked in current smoke environment
+## Closed 5: Telegram delivery e2e verified
 
 Факт:
 
 - добавлен обязательный smoke:
   - `npm run smoke:telegram-delivery-e2e`
-- в текущем прогоне smoke завершился:
-  - `BLOCKED`
-  - причина: `telegram_credentials_missing` (локально не заданы `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_CHAT_ID`).
-- при этом операторский endpoint-probe показал:
-  - `ready.checks.telegram_delivery=true`
-  - `/schedule/run` -> `ok=true`.
+- smoke выполнен с валидными credentials;
+- результат: `PASS`;
+- Telegram API: `http_status=200`, `ok=true`;
+- чат назначения подтверждён по masked `chat_id`.
 
 Статус:
 
-- `blocked` для e2e-подтверждения чата в текущем окружении smoke.
+- `verified`.
 
 Требуется:
 
-- выполнить smoke с реальными локально доступными credentials;
-- получить `PASS` от Telegram API (`sendMessage ok=true`);
-- вручную подтвердить появление сообщения в целевом allowed chat.
+- держать e2e smoke обязательным перед релизами Telegram-изменений.
+
+## Gap 6: Telegram test menu live verification incomplete
+
+Факт:
+
+- в runtime добавлено тестовое русскоязычное меню operator endpoints;
+- добавлен live smoke `tools/smoke_telegram_menu_live.ps1` для `start/health/contracts + unauthorized`;
+- live smoke (`2026-05-26`) вернул `PARTIAL`: `start/health/contracts=400`, `unauthorized=400`;
+- без deploy новой версии worker live endpoint возвращает старое поведение;
+- полный проход кнопок `run/last/evidence/approve/reject` пока подтверждён только как manual checklist.
+
+Статус:
+
+- `partially verified`.
+
+Требуется:
+
+- выполнить deploy c меню;
+- прогнать `smoke_telegram_menu_live.ps1`;
+- выполнить ручной чеклист `tools/smoke_telegram_menu_manual.md` и зафиксировать итог.

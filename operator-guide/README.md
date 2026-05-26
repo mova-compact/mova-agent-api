@@ -35,6 +35,9 @@
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/evidence`
 - `POST /actions/run` для поддерживаемого connector-path (`connector.http.generic.v1` + allowlisted `endpoint_ref`)
+- Telegram delivery e2e smoke:
+  - `npm run smoke:telegram-delivery-e2e` вернул `PASS` (`2026-05-26`);
+  - Telegram API `sendMessage` вернул `ok=true` для allowed chat.
 
 ### `partially verified`
 
@@ -42,13 +45,15 @@
   - `403 connector_execution_failed`
   - `connector_denied`
   - это ожидаемое protected behavior.
+- Telegram test menu для operator endpoints:
+  - runtime-кнопки добавлены;
+  - базовые smoke-проверки есть;
+  - полный live e2e всех кнопок зависит от deploy и ручного чеклиста.
 
 ### `blocked`
 
-- Telegram delivery e2e smoke в текущем прогоне:
-  - команда есть (`npm run smoke:telegram-delivery-e2e`);
-  - получен `BLOCKED` из-за отсутствия локальных `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_CHAT_ID` в окружении запуска smoke;
-  - до успешного `PASS` нельзя считать доставку в конкретный чат подтверждённой.
+- нет критичных blocked пунктов в текущем pass;
+- если отсутствуют Telegram credentials, e2e smoke автоматически вернёт `BLOCKED`.
 
 ### `planned`
 

@@ -241,13 +241,56 @@
 
 Статус:
 
-- `blocked` в текущем прогоне (`2026-05-26`):
-  - `telegram_credentials_missing` в окружении запуска smoke.
+- `verified` (`2026-05-26`):
+  - smoke вернул `PASS`;
+  - Telegram API вернул `http_status=200` и `ok=true`;
+  - чат назначения совпал с `allowed chat` (masked в отчёте).
 
 Что должен увидеть оператор:
 
 - явный `PASS` или `BLOCKED` с причиной;
 - без вывода секретов (только `present true/false` и masked values).
+
+## Smoke 9: Telegram test menu (operator endpoints)
+
+Цель:
+
+- проверить тестовое русскоязычное меню Telegram для операторских endpoint-действий.
+
+Что проверялось:
+
+- runtime-код обработчика `POST /telegram/webhook`:
+  - `/start|/help|/menu` отправляет кнопки;
+  - `menu:health` вызывает health-проверку;
+  - `menu:contracts` читает список контрактов;
+  - `menu:run` запускает `barbershop.owner_report.daily.v0`;
+  - `menu:last` читает статус по сохранённому `last_run_id`;
+  - `menu:evidence` читает evidence-сводку;
+  - `menu:approve|reject` доступны только для `waiting_human`.
+- ограничение доступа только `TELEGRAM_ALLOWED_CHAT_ID`.
+- технический live smoke:
+  - `tools/smoke_telegram_menu_live.ps1` (start/health/contracts + unauthorized chat).
+- ручной чеклист:
+  - `tools/smoke_telegram_menu_manual.md`.
+
+Успех:
+
+- меню показывается в allowed chat;
+- unauthorized chat получает `401`;
+- базовые кнопки (`health/contracts`) отвечают детерминированно.
+
+Проблема:
+
+- live endpoint без deploy нового runtime может вернуть старое поведение;
+- для кнопок `run/evidence/approve/reject` нужен полный ручной проход в чате с актуальным deploy.
+
+Статус:
+
+- `partially verified`:
+  - код и ограничения реализованы;
+  - delivery e2e уже `verified`;
+  - live smoke (`2026-05-26`) вернул `PARTIAL` (`start/health/contracts=400`, `unauthorized=400`) до deploy новой версии worker;
+  - полный live e2e кнопок требует smoke после deploy новой версии worker.
 
 ## Вывод по текущему pass
 
