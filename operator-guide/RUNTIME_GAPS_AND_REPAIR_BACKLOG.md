@@ -108,3 +108,23 @@
 
 - выполнить ручной чеклист `tools/smoke_telegram_menu_manual.md` для полного цикла human-gate кнопок;
 - зафиксировать PASS/BLOCKED по `run/last/evidence/approve/reject`.
+
+## Gap 7: GitHub remote-source registration not enabled in current adapter
+
+Факт:
+
+- целевой сценарий регистрации контракта по `source_url` (GitHub repo + commit pin) не поддержан;
+- `POST /contracts/register` требует `inline_flow_json`;
+- при попытке source-url регистрации API возвращает:
+  - `contract_register_missing_flow`
+  - `source_url ingestion is not enabled in worker adapter`.
+- контракт был зарегистрирован и запущен в поддерживаемом режиме `inline_flow_json`.
+
+Статус:
+
+- `partially verified` (remote-source mode blocked, inline mode verified).
+
+Требуется:
+
+- добавить adapter support для source-url ingestion + commit pin;
+- или зафиксировать inline-only режим как официальный до следующего pass.

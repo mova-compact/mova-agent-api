@@ -332,6 +332,48 @@
 
 - `verified` (`2026-05-26`) для read-only projection.
 
+## Smoke 11: Client contract registration from GitHub repo source
+
+Цель:
+
+- зарегистрировать контракт клиента из GitHub-репозитория `mova-compact/barbershop-contracts`.
+
+Что проверялось:
+
+- проверка доступных registration-маршрутов;
+- попытка remote-source регистрации по `source_url`;
+- fallback-регистрация через `POST /contracts/register` с `inline_flow_json` из:
+  - `contracts/barbershop-owner-report-daily/flow.json`
+  - pin-референс источника: commit `3caaaef` (как metadata во входе, не как runtime source pin).
+
+Успех:
+
+- `POST /contracts/register` принял payload:
+  - `contract_id=barbershop.owner_report.daily.v0`
+  - `execution_type=agent`
+  - `inline_flow_json=<flow>`
+- ответ: `admitted=true`, `mode=inline_flow_json`.
+- контракт виден в `GET /contracts`;
+- `POST /contracts/{contract_id}/run` возвращает `completed`;
+- `GET /runs/{run_id}` и `GET /runs/{run_id}/evidence` читаются;
+- Telegram menu callbacks:
+  - `menu:contracts` -> `200`
+  - `menu:run` -> `200`
+  - `menu:last` -> `200`
+  - `menu:evidence` -> `200`.
+
+Проблема:
+
+- remote-source ingestion из GitHub URL не включён в текущем worker adapter:
+  - API возвращает `contract_register_missing_flow`
+  - detail: `source_url ingestion is not enabled in worker adapter`.
+- human-gate path через menu `approve/reject` не активирован для этого прогона (run завершался `completed`).
+
+Статус:
+
+- `partially verified` для цели “из GitHub как remote source”;
+- `verified` для inline registration + run/evidence/operator surface.
+
 ## Вывод по текущему pass
 
 - Contract-маршруты подтверждены end-to-end, включая continuation.
