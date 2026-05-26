@@ -263,6 +263,7 @@
   - `/start|/help|/menu` отправляет кнопки;
   - `menu:health` вызывает health-проверку;
   - `menu:contracts` читает список контрактов;
+  - `menu:bindings` показывает read-only сводку привязок;
   - `menu:run` запускает `barbershop.owner_report.daily.v0`;
   - `menu:last` читает статус по сохранённому `last_run_id`;
   - `menu:evidence` читает evidence-сводку;
@@ -286,11 +287,50 @@
 
 Статус:
 
-- `partially verified`:
-  - код и ограничения реализованы;
-  - delivery e2e уже `verified`;
-  - live smoke (`2026-05-26`) вернул `PARTIAL` (`start/health/contracts=400`, `unauthorized=400`) до deploy новой версии worker;
-  - полный live e2e кнопок требует smoke после deploy новой версии worker.
+- `verified` для базового menu-path (`2026-05-26` после deploy):
+  - `start_http=200`;
+  - `health_http=200`;
+  - `contracts_http=200`;
+  - `bindings_http=200`;
+  - `unauthorized_http=401`.
+- `partially verified` для расширенных кнопок:
+  - `run/last/evidence/approve/reject` требуют отдельного live-прохода с контролем статусов `waiting_human/completed`.
+
+## Smoke 10: Runtime bindings read-only projection
+
+Цель:
+
+- подтвердить, что оператор может видеть безопасную сводку привязок без доступа к секретам.
+
+Что проверялось:
+
+- `menu:bindings` через `tools/smoke_telegram_menu_live.ps1`;
+- проверка ответа `200` только для allowed chat;
+- проверка, что projection не содержит токены;
+- проверка, что `telegram_chat` маскирован;
+- проверка, что unauthorized chat получает `401`.
+
+Успех:
+
+- `bindings_http=200` для allowed chat;
+- в projection есть поля:
+  - `api_contour`
+  - `telegram_chat_masked`
+  - `report_contract_id`
+  - `last_run_id`
+  - `evidence_available`
+  - `status`
+- токены не возвращаются.
+
+Проблема:
+
+- `bindings_http != 200` в allowed chat;
+- projection раскрывает секреты;
+- unauthorized chat получает доступ.
+
+Статус:
+
+- `verified` (`2026-05-26`) для read-only projection.
 
 ## Вывод по текущему pass
 

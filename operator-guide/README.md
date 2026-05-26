@@ -38,6 +38,11 @@
 - Telegram delivery e2e smoke:
   - `npm run smoke:telegram-delivery-e2e` вернул `PASS` (`2026-05-26`);
   - Telegram API `sendMessage` вернул `ok=true` для allowed chat.
+- Telegram visible menu и bot commands:
+  - `/start` и кнопки меню подтверждены на live worker;
+  - команды `/start`, `/menu`, `/help`, `/bindings`, `/run_owner_report`, `/last_run` зарегистрированы.
+- Runtime bindings read-only projection:
+  - `menu:bindings` подтверждён на live (`200`) с маскированными полями.
 
 ### `partially verified`
 
@@ -46,9 +51,8 @@
   - `connector_denied`
   - это ожидаемое protected behavior.
 - Telegram test menu для operator endpoints:
-  - runtime-кнопки добавлены;
-  - базовые smoke-проверки есть;
-  - полный live e2e всех кнопок зависит от deploy и ручного чеклиста.
+  - базовый live-path подтверждён (`/start`, `menu:health`, `menu:contracts`, `menu:bindings`, unauthorized deny);
+  - полный live e2e кнопок `run/last/evidence/approve/reject` фиксируется отдельным ручным smoke.
 
 ### `blocked`
 
@@ -58,7 +62,7 @@
 ### `planned`
 
 - операторское управление расписаниями;
-- прозрачный операторский экран привязок выполнения;
+- расширенный операторский экран привязок выполнения;
 - расширенный operator UX для контрольной валидации привязок перед запуском.
 
 ### `not implemented`

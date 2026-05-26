@@ -53,11 +53,13 @@
 - отдельный runtime/API design;
 - или не обещать это оператору в текущем контуре.
 
-## Gap 4: Runtime bindings visibility incomplete
+## Gap 4: Runtime bindings visibility partially reduced
 
 Факт:
 
-- нет подтверждённого операторского экрана полной таблицы привязок выполнения.
+- добавлен read-only Telegram projection `🔗 Привязки` / `/bindings`;
+- live smoke подтверждает `menu:bindings -> 200` для allowed chat;
+- projection показывает безопасную сводку без токенов.
 
 Статус:
 
@@ -65,8 +67,8 @@
 
 Требуется:
 
-- либо добавить read-only projection привязок;
-- либо оставить это как known limitation.
+- при необходимости расширить до полной таблицы привязок;
+- пока сохранять ограничение как known limitation (видимость неполная).
 
 ## Closed 5: Telegram delivery e2e verified
 
@@ -87,14 +89,15 @@
 
 - держать e2e smoke обязательным перед релизами Telegram-изменений.
 
-## Gap 6: Telegram test menu live verification incomplete
+## Gap 6: Telegram test menu full action-cycle incomplete
 
 Факт:
 
-- в runtime добавлено тестовое русскоязычное меню operator endpoints;
-- добавлен live smoke `tools/smoke_telegram_menu_live.ps1` для `start/health/contracts + unauthorized`;
-- live smoke (`2026-05-26`) вернул `PARTIAL`: `start/health/contracts=400`, `unauthorized=400`;
-- без deploy новой версии worker live endpoint возвращает старое поведение;
+- после deploy и webhook-update live smoke подтверждает базовый путь:
+  - `/start` -> `200 (menu_sent)`
+  - `menu:health` -> `200`
+  - `menu:contracts` -> `200`
+  - unauthorized chat -> `401`
 - полный проход кнопок `run/last/evidence/approve/reject` пока подтверждён только как manual checklist.
 
 Статус:
@@ -103,6 +106,5 @@
 
 Требуется:
 
-- выполнить deploy c меню;
-- прогнать `smoke_telegram_menu_live.ps1`;
-- выполнить ручной чеклист `tools/smoke_telegram_menu_manual.md` и зафиксировать итог.
+- выполнить ручной чеклист `tools/smoke_telegram_menu_manual.md` для полного цикла human-gate кнопок;
+- зафиксировать PASS/BLOCKED по `run/last/evidence/approve/reject`.

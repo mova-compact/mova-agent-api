@@ -3,8 +3,8 @@
 | Проблема | Риск для оператора | Минимальная проверка | Минимальное исправление | Приоритет |
 | --- | --- | --- | --- | --- |
 | Нет интерфейса расписаний | Оператор не может штатно управлять запуском по времени | Проверить наличие runtime/API маршрутов расписаний | Добавить минимальный read-only/управляющий API или убрать обещание из target-state | P1 |
-| Неполная видимость runtime bindings | Риск запуска не в том контуре | Сопоставить среду и evidence на нескольких запусках | Добавить read-only projection привязок выполнения | P1 |
-| Telegram test menu live verification incomplete | Оператор может видеть старое поведение меню или неполный набор кнопок | Задеплоить меню-версию и прогнать `tools/smoke_telegram_menu_live.ps1` + manual checklist | Зафиксировать PASS/BLOCKED по кнопкам `run/last/evidence/approve/reject` и обновить guide/skills | P1 |
+| Неполная расширенная видимость runtime bindings | Есть read-only сводка, но нет полной таблицы всех привязок | Проверить `menu:bindings` и сопоставить с evidence/capabilities на нескольких запусках | Уточнить, нужна ли полная таблица; если да — добавить расширенную read-only projection | P2 |
+| Telegram test menu full action-cycle not fully verified | Оператор видит меню, но часть кнопок может вести себя неочевидно в human-gate сценарии | Прогнать `tools/smoke_telegram_menu_manual.md` на `run/last/evidence/approve/reject` | Зафиксировать PASS/BLOCKED по полному циклу `waiting_human -> decision` из меню | P1 |
 
 ## Naming mismatch note
 

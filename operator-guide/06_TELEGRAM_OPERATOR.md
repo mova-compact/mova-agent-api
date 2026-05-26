@@ -48,13 +48,20 @@ Telegram не должен:
 ▶️ Запустить тестовый отчёт  
 📊 Последний запуск  
 🧾 Доказательства  
+🔗 Привязки  
 ✅ Одобрить  
 ⛔ Отклонить  
 ❓ Помощь
 
 Статус:
 
-- `partially verified` — меню реализовано, базовые кнопки подтверждены техническим smoke; полный live e2e всех кнопок фиксируется отдельным manual smoke после deploy.
+- `verified` для видимого меню:
+  - после deploy и webhook-check `/start` возвращает `menu_sent`;
+  - live smoke подтверждает `start=200`, `menu:health=200`, `menu:contracts=200`, `menu:bindings=200`, `unauthorized=401`.
+- `verified` для команд:
+  - зарегистрированы `/start`, `/menu`, `/help`, `/bindings`, `/run_owner_report`, `/last_run`.
+- `partially verified` для полного цикла кнопок:
+  - `run/last/evidence/approve/reject` требуют отдельного live-прохода по manual checklist.
 
 ## Что означает каждая кнопка
 

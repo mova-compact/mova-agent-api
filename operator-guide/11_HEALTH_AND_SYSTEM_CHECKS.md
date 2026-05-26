@@ -54,7 +54,9 @@ Health check — это быстрый ответ системы на вопро
 
 - операторский контур отвечает `ready` с `telegram_delivery=true`;
 - `/schedule/run` выполняется и возвращает `ok=true`;
-- тестовое Telegram-меню реализовано в runtime-коде, но не полностью подтверждено live-deploy smoke для всех кнопок.
+- тестовое Telegram-меню:
+  - базовый видимый путь `start/health/contracts/bindings` подтверждён live smoke;
+  - полный цикл `run/last/evidence/approve/reject` остаётся `partially verified` до отдельного e2e-прохода.
 
 ## Проверка MOVA API
 
