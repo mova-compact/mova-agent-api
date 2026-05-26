@@ -17,6 +17,9 @@
 - [`10_ERRORS_AND_RECOVERY.md`](./10_ERRORS_AND_RECOVERY.md) — различие между остановкой, отказом и аварией.
 - [`11_HEALTH_AND_SYSTEM_CHECKS.md`](./11_HEALTH_AND_SYSTEM_CHECKS.md) — ежедневные проверки здоровья системы.
 - [`12_OPERATOR_SMOKE_RUNS.md`](./12_OPERATOR_SMOKE_RUNS.md) — runtime-verified smoke-проверки оператора.
+- [`RUNTIME_GAPS_AND_REPAIR_BACKLOG.md`](./RUNTIME_GAPS_AND_REPAIR_BACKLOG.md) — зафиксированные runtime gaps и обязательные repair-направления.
+- [`NEXT_REPAIR_TASKS.md`](./NEXT_REPAIR_TASKS.md) — короткий список следующих repair-задач.
+- [`Operator Skills`](../../mova-skills/operator/README.md) — операторские Codex-скиллы для обслуживания контура.
 
 ## Что в гайде подтверждено реальными smoke-проверками
 
