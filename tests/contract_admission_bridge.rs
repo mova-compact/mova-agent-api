@@ -164,3 +164,103 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
     let run_success_json: Value = serde_json::from_slice(&run_success_body).unwrap();
     assert_eq!(run_success_json["status"], "completed");
 }
+
+#[tokio::test]
+async fn contract_register_rejects_github_source_without_commit_sha() {
+    let app = router();
+    let payload = json!({
+        "mode": "github_source",
+        "contract_id": "barbershop.owner_report.daily.v0",
+        "execution_type": "agent",
+        "source_url": "https://github.com/mova-compact/barbershop-contracts",
+        "contract_path": "contracts/barbershop-owner-report-daily"
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn contract_register_rejects_non_github_source() {
+    let app = router();
+    let payload = json!({
+        "mode": "github_source",
+        "contract_id": "barbershop.owner_report.daily.v0",
+        "execution_type": "agent",
+        "source_url": "https://example.com/contracts",
+        "commit_sha": "3caaaef",
+        "contract_path": "contracts/barbershop-owner-report-daily"
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn contract_register_accepts_local_packaged_inline_mode() {
+    let app = router();
+    let payload = json!({
+        "mode": "local_packaged",
+        "contract_id": "barbershop.owner_report.daily.v0",
+        "execution_type": "agent",
+        "inline_flow_json": contract_flow_with_gate()
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["mode"], "local_packaged");
+}
+
+#[tokio::test]
+async fn contract_register_accepts_github_source_with_commit_pin() {
+    let app = router();
+    let payload = json!({
+        "mode": "github_source",
+        "contract_id": "barbershop.owner_report.daily.v0",
+        "execution_type": "agent",
+        "source_url": "https://github.com/mova-compact/barbershop-contracts",
+        "commit_sha": "3caaaef",
+        "contract_path": "contracts/barbershop-owner-report-daily"
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}

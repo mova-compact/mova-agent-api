@@ -109,22 +109,26 @@
 - выполнить ручной чеклист `tools/smoke_telegram_menu_manual.md` для полного цикла human-gate кнопок;
 - зафиксировать PASS/BLOCKED по `run/last/evidence/approve/reject`.
 
-## Gap 7: GitHub remote-source registration not enabled in current adapter
+## Closed 7: GitHub source ingestion + local packaged registration
 
 Факт:
 
-- целевой сценарий регистрации контракта по `source_url` (GitHub repo + commit pin) не поддержан;
-- `POST /contracts/register` требует `inline_flow_json`;
-- при попытке source-url регистрации API возвращает:
-  - `contract_register_missing_flow`
-  - `source_url ingestion is not enabled in worker adapter`.
-- контракт был зарегистрирован и запущен в поддерживаемом режиме `inline_flow_json`.
+- `POST /contracts/register` поддерживает:
+  - `mode=local_packaged` (`inline_flow_json` из локально упакованного контракта);
+  - `mode=github_source` (`source_url + commit_sha + contract_path`).
+- runtime загружает pinned файлы контракта из GitHub raw URL.
+- source metadata сохраняется в реестре контракта:
+  - `source_type`, `source_url`, `commit_sha`, `contract_path`, `registered_at`, `admitted`.
+- reject cases подтверждены:
+  - missing `commit_sha`;
+  - non-github source;
+  - unsafe `contract_path`.
 
 Статус:
 
-- `partially verified` (remote-source mode blocked, inline mode verified).
+- `verified` для public GitHub pinned source и local packaged.
+- `partially verified` для private GitHub source (auth-flow не реализован).
 
 Требуется:
 
-- добавить adapter support для source-url ingestion + commit pin;
-- или зафиксировать inline-only режим как официальный до следующего pass.
+- отдельный pass для private GitHub token flow при необходимости.

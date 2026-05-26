@@ -332,47 +332,60 @@
 
 - `verified` (`2026-05-26`) для read-only projection.
 
-## Smoke 11: Client contract registration from GitHub repo source
+## Smoke 11: Регистрация контракта из local repo и GitHub source
 
 Цель:
 
-- зарегистрировать контракт клиента из GitHub-репозитория `mova-compact/barbershop-contracts`.
+- подтвердить два режима регистрации:
+  - local packaged;
+  - GitHub source с pin на commit.
 
 Что проверялось:
 
-- проверка доступных registration-маршрутов;
-- попытка remote-source регистрации по `source_url`;
-- fallback-регистрация через `POST /contracts/register` с `inline_flow_json` из:
-  - `contracts/barbershop-owner-report-daily/flow.json`
-  - pin-референс источника: commit `3caaaef` (как metadata во входе, не как runtime source pin).
+- `POST /contracts/register` в режимах:
+  - `mode=local_packaged` + `inline_flow_json`;
+  - `mode=github_source` + `source_url` + `commit_sha` + `contract_path`.
+- загрузка pinned GitHub-файлов:
+  - `manifest.json`
+  - `flow.json`
+  - `policy.json`
+  - `bindings.example.json`
+  - `evidence_requirements.json`
+- runtime-тесты:
+  - `cargo test --test contract_admission_bridge` (включая reject/pin cases).
 
 Успех:
 
-- `POST /contracts/register` принял payload:
-  - `contract_id=barbershop.owner_report.daily.v0`
-  - `execution_type=agent`
-  - `inline_flow_json=<flow>`
-- ответ: `admitted=true`, `mode=inline_flow_json`.
+- `POST /contracts/register` принимает:
+  - `mode=local_packaged`;
+  - `mode=github_source` (только с `commit_sha`).
+- валидация отклоняет:
+  - отсутствие `commit_sha`;
+  - не-GitHub `source_url`;
+  - небезопасный `contract_path`.
+- в контракт сохраняется source metadata:
+  - `source_type`
+  - `source_url`
+  - `commit_sha`
+  - `contract_path`
+  - `registered_at`
+  - `admitted`
 - контракт виден в `GET /contracts`;
-- `POST /contracts/{contract_id}/run` возвращает `completed`;
+- `POST /contracts/{contract_id}/run` возвращает `completed` или `waiting_human`;
 - `GET /runs/{run_id}` и `GET /runs/{run_id}/evidence` читаются;
-- Telegram menu callbacks:
-  - `menu:contracts` -> `200`
-  - `menu:run` -> `200`
-  - `menu:last` -> `200`
-  - `menu:evidence` -> `200`.
+- клиентские скрипты добавлены:
+  - `scripts/register_contract_local.mjs`
+  - `scripts/register_contract_github_source.mjs`.
 
 Проблема:
 
-- remote-source ingestion из GitHub URL не включён в текущем worker adapter:
-  - API возвращает `contract_register_missing_flow`
-  - detail: `source_url ingestion is not enabled in worker adapter`.
-- human-gate path через menu `approve/reject` не активирован для этого прогона (run завершался `completed`).
+- private GitHub repo без отдельного auth-flow остаётся `blocked`.
+- Telegram menu smoke для этого раздела отдельно не прогонялся в этом pass.
 
 Статус:
 
-- `partially verified` для цели “из GitHub как remote source”;
-- `verified` для inline registration + run/evidence/operator surface.
+- `verified` для `local_packaged` и `github_source` (pinned commit).
+- `partially verified` для private GitHub ingestion (auth-flow не реализован).
 
 ## Вывод по текущему pass
 

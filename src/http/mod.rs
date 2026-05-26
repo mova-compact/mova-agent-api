@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionMode {
@@ -103,7 +104,10 @@ struct RunStatusResponse {
 struct RegisterContractRequest {
     contract_id: String,
     execution_type: String,
+    mode: Option<String>,
     source_url: Option<String>,
+    commit_sha: Option<String>,
+    contract_path: Option<String>,
     inline_flow_json: Option<Value>,
     manifest: Option<Value>,
     policy: Option<Value>,
@@ -117,6 +121,18 @@ struct ContractRegisterResponse {
     contract_id: String,
     admitted: bool,
     mode: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRegisterSource {
+    mode: String,
+    source_url: Option<String>,
+    commit_sha: Option<String>,
+    contract_path: Option<String>,
+    flow: Value,
+    manifest: Option<Value>,
+    policy: Option<Value>,
+    evidence_expectations: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -725,40 +741,40 @@ async fn post_contract_register(
         )
         .into_response();
     }
-    let has_source_url = payload
-        .source_url
-        .as_ref()
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    let has_inline = payload.inline_flow_json.is_some();
-    if has_source_url == has_inline {
+    let resolved = match resolve_contract_register_source(&payload).await {
+        Ok(v) => v,
+        Err((code, message, details)) => return bad_request(&code, &message, details).into_response(),
+    };
+
+    if let Some(secret_field) = detect_secret_like_json(&resolved.flow, "flow") {
         return bad_request(
-            "contract_registration_invalid",
-            "contract registration payload is invalid",
-            vec!["exactly one of source_url or inline_flow_json is required".to_string()],
+            "contract_registration_secret_like_payload",
+            "contract package contains secret-looking value",
+            vec![secret_field],
         )
         .into_response();
     }
-
-    let flow = if let Some(inline) = payload.inline_flow_json.as_ref() {
-        match parse_inline_flow_json(inline) {
-            Ok(v) => v,
-            Err(err) => {
-                return bad_request(
-                    "contract_flow_parse_failed",
-                    "inline flow parse failed",
-                    vec![err.message],
-                )
-                .into_response()
-            }
+    if let Some(policy) = resolved.policy.as_ref() {
+        if let Some(secret_field) = detect_secret_like_json(policy, "policy") {
+            return bad_request(
+                "contract_registration_secret_like_payload",
+                "contract package contains secret-looking value",
+                vec![secret_field],
+            )
+            .into_response();
         }
-    } else {
-        return bad_request(
-            "contract_registration_invalid",
-            "source_url admission currently requires inline_flow_json bridge mode",
-            vec!["source_url is stored as identity only in V0 bridge".to_string()],
-        )
-        .into_response();
+    }
+
+    let flow = match parse_inline_flow_json(&resolved.flow) {
+        Ok(v) => v,
+        Err(err) => {
+            return bad_request(
+                "contract_flow_parse_failed",
+                "inline flow parse failed",
+                vec![err.message],
+            )
+            .into_response()
+        }
     };
 
     let connector_requirements = match parse_contract_connector_requirements(payload.connector_requirements.clone()) {
@@ -776,12 +792,17 @@ async fn post_contract_register(
     let admitted = AdmittedContract {
         contract_id: payload.contract_id.clone(),
         execution_type: payload.execution_type.clone(),
-        source_url: payload.source_url.clone(),
-        manifest: payload.manifest.clone(),
+        source_type: Some(resolved.mode.clone()),
+        source_url: resolved.source_url.clone(),
+        commit_sha: resolved.commit_sha.clone(),
+        contract_path: resolved.contract_path.clone(),
+        registered_at: Some("2026-05-26T00:00:00Z".to_string()),
+        admitted: Some(true),
+        manifest: resolved.manifest.clone(),
         flow,
-        policy: payload.policy.clone(),
+        policy: resolved.policy.clone(),
         connector_requirements,
-        evidence_expectations: payload.evidence_expectations.clone(),
+        evidence_expectations: resolved.evidence_expectations.clone(),
         open_questions: payload.open_questions.clone(),
     };
     if let Err(err) = validate_admitted_contract(&admitted) {
@@ -806,10 +827,276 @@ async fn post_contract_register(
         Json(ContractRegisterResponse {
             contract_id: payload.contract_id,
             admitted: true,
-            mode: "inline_flow_json".to_string(),
+            mode: resolved.mode,
         }),
     )
         .into_response()
+}
+
+async fn resolve_contract_register_source(
+    payload: &RegisterContractRequest,
+) -> Result<ResolvedRegisterSource, (String, String, Vec<String>)> {
+    let requested_mode = payload
+        .mode
+        .clone()
+        .unwrap_or_else(|| {
+            if payload.inline_flow_json.is_some() {
+                "inline_flow_json".to_string()
+            } else {
+                "github_source".to_string()
+            }
+        })
+        .trim()
+        .to_string();
+    if requested_mode == "inline_flow_json" || requested_mode == "local_packaged" {
+        let flow = payload.inline_flow_json.clone().ok_or_else(|| {
+            (
+                "contract_register_missing_flow".to_string(),
+                "inline_flow_json is required".to_string(),
+                vec![format!("mode: {requested_mode}")],
+            )
+        })?;
+        return Ok(ResolvedRegisterSource {
+            mode: requested_mode,
+            source_url: payload.source_url.clone(),
+            commit_sha: payload.commit_sha.clone(),
+            contract_path: payload.contract_path.clone(),
+            flow,
+            manifest: payload.manifest.clone(),
+            policy: payload.policy.clone(),
+            evidence_expectations: payload.evidence_expectations.clone(),
+        });
+    }
+    if requested_mode != "github_source" {
+        return Err((
+            "contract_registration_invalid".to_string(),
+            "unsupported registration mode".to_string(),
+            vec![format!("mode: {requested_mode}")],
+        ));
+    }
+
+    let source_url = payload
+        .source_url
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            (
+                "contract_registration_invalid".to_string(),
+                "github_source requires source_url".to_string(),
+                vec!["source_url is missing".to_string()],
+            )
+        })?;
+    if !is_allowed_github_source_url(&source_url) {
+        return Err((
+            "contract_registration_invalid".to_string(),
+            "only github.com and raw.githubusercontent.com are allowed".to_string(),
+            vec![format!("source_url: {source_url}")],
+        ));
+    }
+    let commit_sha = payload
+        .commit_sha
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            (
+                "contract_registration_invalid".to_string(),
+                "github_source requires commit_sha pin".to_string(),
+                vec!["floating branch is not allowed".to_string()],
+            )
+        })?;
+    if !is_valid_commit_sha(&commit_sha) {
+        return Err((
+            "contract_registration_invalid".to_string(),
+            "commit_sha format is invalid".to_string(),
+            vec!["expected hex sha length 7..64".to_string()],
+        ));
+    }
+    let contract_path = payload
+        .contract_path
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            (
+                "contract_registration_invalid".to_string(),
+                "github_source requires contract_path".to_string(),
+                vec!["contract_path is missing".to_string()],
+            )
+        })?;
+    if !is_safe_contract_path(&contract_path) {
+        return Err((
+            "contract_registration_invalid".to_string(),
+            "contract_path contains unsafe traversal".to_string(),
+            vec![contract_path],
+        ));
+    }
+
+    let fetched = fetch_github_contract_package(&source_url, &commit_sha, &contract_path).await?;
+    Ok(ResolvedRegisterSource {
+        mode: requested_mode,
+        source_url: Some(source_url),
+        commit_sha: Some(commit_sha),
+        contract_path: Some(contract_path),
+        flow: fetched.flow,
+        manifest: Some(fetched.manifest),
+        policy: Some(fetched.policy),
+        evidence_expectations: Some(fetched.evidence_requirements),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct FetchedGithubPackage {
+    manifest: Value,
+    flow: Value,
+    policy: Value,
+    _bindings_example: Value,
+    evidence_requirements: Value,
+}
+
+async fn fetch_github_contract_package(
+    source_url: &str,
+    commit_sha: &str,
+    contract_path: &str,
+) -> Result<FetchedGithubPackage, (String, String, Vec<String>)> {
+    let (owner, repo) = parse_github_owner_repo(source_url)?;
+    let base = format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{}",
+        contract_path.trim_matches('/')
+    );
+    let manifest = fetch_json_from_url(&format!("{base}/manifest.json")).await?;
+    let flow = fetch_json_from_url(&format!("{base}/flow.json")).await?;
+    let policy = fetch_json_from_url(&format!("{base}/policy.json")).await?;
+    let bindings_example = fetch_json_from_url(&format!("{base}/bindings.example.json")).await?;
+    let evidence_requirements = fetch_json_from_url(&format!("{base}/evidence_requirements.json")).await?;
+    Ok(FetchedGithubPackage {
+        manifest,
+        flow,
+        policy,
+        _bindings_example: bindings_example,
+        evidence_requirements,
+    })
+}
+
+async fn fetch_json_from_url(url: &str) -> Result<Value, (String, String, Vec<String>)> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| {
+            (
+                "contract_source_fetch_failed".to_string(),
+                "failed to fetch contract source".to_string(),
+                vec![format!("{url}: {err}")],
+            )
+        })?;
+    if !response.status().is_success() {
+        return Err((
+            "contract_source_fetch_failed".to_string(),
+            "failed to fetch contract source".to_string(),
+            vec![format!("{url}: status {}", response.status())],
+        ));
+    }
+    response.json::<Value>().await.map_err(|err| {
+        (
+            "contract_source_parse_failed".to_string(),
+            "fetched contract file is not valid json".to_string(),
+            vec![format!("{url}: {err}")],
+        )
+    })
+}
+
+fn parse_github_owner_repo(source_url: &str) -> Result<(String, String), (String, String, Vec<String>)> {
+    let parsed = Url::parse(source_url).map_err(|err| {
+        (
+            "contract_registration_invalid".to_string(),
+            "invalid source_url".to_string(),
+            vec![err.to_string()],
+        )
+    })?;
+    let host = parsed.host_str().unwrap_or_default();
+    let segments = parsed
+        .path_segments()
+        .map(|s| s.collect::<Vec<_>>())
+        .unwrap_or_default();
+    if host == "github.com" {
+        if segments.len() < 2 {
+            return Err((
+                "contract_registration_invalid".to_string(),
+                "source_url must include owner/repo".to_string(),
+                vec![source_url.to_string()],
+            ));
+        }
+        return Ok((segments[0].to_string(), segments[1].to_string()));
+    }
+    if host == "raw.githubusercontent.com" {
+        if segments.len() < 2 {
+            return Err((
+                "contract_registration_invalid".to_string(),
+                "raw source_url must include owner/repo".to_string(),
+                vec![source_url.to_string()],
+            ));
+        }
+        return Ok((segments[0].to_string(), segments[1].to_string()));
+    }
+    Err((
+        "contract_registration_invalid".to_string(),
+        "unsupported source_url host".to_string(),
+        vec![host.to_string()],
+    ))
+}
+
+fn is_allowed_github_source_url(source_url: &str) -> bool {
+    if let Ok(parsed) = Url::parse(source_url) {
+        if parsed.scheme() != "https" {
+            return false;
+        }
+        if let Some(host) = parsed.host_str() {
+            return host == "github.com" || host == "raw.githubusercontent.com";
+        }
+    }
+    false
+}
+
+fn is_valid_commit_sha(value: &str) -> bool {
+    let len = value.len();
+    if !(7..=64).contains(&len) {
+        return false;
+    }
+    value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_safe_contract_path(value: &str) -> bool {
+    if value.contains("..") || value.contains('\\') {
+        return false;
+    }
+    !value.starts_with('/') && !value.starts_with('.')
+}
+
+fn detect_secret_like_json(value: &Value, path: &str) -> Option<String> {
+    match value {
+        Value::String(s) => {
+            let lower = s.to_ascii_lowercase();
+            if lower.contains("sk-") || lower.contains("token") || lower.contains("secret") || lower.contains("ghp_") {
+                return Some(format!("{path}: secret-looking string"));
+            }
+            None
+        }
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(idx, item)| detect_secret_like_json(item, &format!("{path}[{idx}]"))),
+        Value::Object(map) => map.iter().find_map(|(k, v)| {
+            let lower_key = k.to_ascii_lowercase();
+            if lower_key.contains("token") || lower_key.contains("secret") || lower_key.contains("api_key") {
+                return Some(format!("{path}.{k}: forbidden key"));
+            }
+            detect_secret_like_json(v, &format!("{path}.{k}"))
+        }),
+        _ => None,
+    }
 }
 
 async fn get_contracts(State(state): State<AppState>) -> impl IntoResponse {

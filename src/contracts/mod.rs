@@ -40,7 +40,12 @@ pub struct ContractConnectorSpec {
 pub struct AdmittedContract {
     pub contract_id: String,
     pub execution_type: String,
+    pub source_type: Option<String>,
     pub source_url: Option<String>,
+    pub commit_sha: Option<String>,
+    pub contract_path: Option<String>,
+    pub registered_at: Option<String>,
+    pub admitted: Option<bool>,
     pub manifest: Option<Value>,
     pub flow: ContractFlow,
     pub policy: Option<Value>,

@@ -23,6 +23,7 @@ worker = { version = "0.7.5", features = ["http"], optional = true }
 axum = "0.7"
 tower = "0.5"
 tokio = { version = "1.39", default-features = false, features = ["rt", "macros"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tokio = { version = "1.39", default-features = false, features = ["rt-multi-thread", "macros"] }

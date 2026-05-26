@@ -5,7 +5,7 @@
 | Нет интерфейса расписаний | Оператор не может штатно управлять запуском по времени | Проверить наличие runtime/API маршрутов расписаний | Добавить минимальный read-only/управляющий API или убрать обещание из target-state | P1 |
 | Неполная расширенная видимость runtime bindings | Есть read-only сводка, но нет полной таблицы всех привязок | Проверить `menu:bindings` и сопоставить с evidence/capabilities на нескольких запусках | Уточнить, нужна ли полная таблица; если да — добавить расширенную read-only projection | P2 |
 | Telegram test menu full action-cycle not fully verified | Оператор видит меню, но часть кнопок может вести себя неочевидно в human-gate сценарии | Прогнать `tools/smoke_telegram_menu_manual.md` на `run/last/evidence/approve/reject` | Зафиксировать PASS/BLOCKED по полному циклу `waiting_human -> decision` из меню | P1 |
-| GitHub remote-source registration mode missing | Нельзя регистрировать клиентский контракт по GitHub URL с commit pin напрямую | Проверить `POST /contracts/register` в режиме source_url и зафиксировать ответ адаптера | Добавить source-url ingestion support в adapter или официально оставить inline-only контрактную регистрацию | P1 |
+| Private GitHub source auth-flow missing | Нельзя ingest-контракт из приватного GitHub repo без отдельного auth-механизма | Проверить `POST /contracts/register` c private source и зафиксировать `blocked` | Добавить минимальный token-based fetch flow для private repos | P2 |
 
 ## Naming mismatch note
 
