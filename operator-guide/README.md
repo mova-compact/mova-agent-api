@@ -38,13 +38,17 @@
 
 ### `partially verified`
 
-- Telegram delivery:
-  - след Telegram-шага виден в evidence;
-  - полноценная операторская проверка доставки в конкретный чат в этом pass не зафиксирована как стабильная.
 - `/actions/run` c неподдерживаемым connector-path:
   - `403 connector_execution_failed`
   - `connector_denied`
   - это ожидаемое protected behavior.
+
+### `blocked`
+
+- Telegram delivery e2e smoke в текущем прогоне:
+  - команда есть (`npm run smoke:telegram-delivery-e2e`);
+  - получен `BLOCKED` из-за отсутствия локальных `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_CHAT_ID` в окружении запуска smoke;
+  - до успешного `PASS` нельзя считать доставку в конкретный чат подтверждённой.
 
 ### `planned`
 

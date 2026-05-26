@@ -212,6 +212,43 @@
 - `/actions/run` не “сломался”;
 - маршрут принимает только разрешённые connector-paths и предсказуемо блокирует нерелевантные.
 
+## Smoke 8: Telegram delivery e2e
+
+Цель:
+
+- подтвердить реальную отправку тестового сообщения ботом в разрешённый чат.
+
+Что проверялось:
+
+- шаблон Cloudflare operator:
+  - `npm run smoke:telegram-delivery-e2e`
+- внутри smoke:
+  - проверка наличия `TELEGRAM_BOT_TOKEN`;
+  - проверка наличия `TELEGRAM_ALLOWED_CHAT_ID`;
+  - опциональный триггер операторского `/schedule/run`;
+  - прямой `sendMessage` в `TELEGRAM_ALLOWED_CHAT_ID` с тестовым маркером.
+
+Успех:
+
+- smoke возвращает `PASS`;
+- Telegram API возвращает `ok=true` для тестового сообщения;
+- чат-назначение совпадает с `allowed chat`.
+
+Проблема:
+
+- отсутствует `TELEGRAM_BOT_TOKEN` или `TELEGRAM_ALLOWED_CHAT_ID` в окружении smoke;
+- Telegram API возвращает не-`200` или `ok=false`.
+
+Статус:
+
+- `blocked` в текущем прогоне (`2026-05-26`):
+  - `telegram_credentials_missing` в окружении запуска smoke.
+
+Что должен увидеть оператор:
+
+- явный `PASS` или `BLOCKED` с причиной;
+- без вывода секретов (только `present true/false` и masked values).
+
 ## Вывод по текущему pass
 
 - Contract-маршруты подтверждены end-to-end, включая continuation.

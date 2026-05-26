@@ -68,17 +68,25 @@
 - либо добавить read-only projection привязок;
 - либо оставить это как known limitation.
 
-## Gap 5: Telegram delivery e2e partially verified
+## Gap 5: Telegram delivery e2e blocked in current smoke environment
 
 Факт:
 
-- в evidence есть Telegram-step;
-- но нет обязательного e2e-check доставки в конкретный чат.
+- добавлен обязательный smoke:
+  - `npm run smoke:telegram-delivery-e2e`
+- в текущем прогоне smoke завершился:
+  - `BLOCKED`
+  - причина: `telegram_credentials_missing` (локально не заданы `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_CHAT_ID`).
+- при этом операторский endpoint-probe показал:
+  - `ready.checks.telegram_delivery=true`
+  - `/schedule/run` -> `ok=true`.
 
 Статус:
 
-- `partially verified`
+- `blocked` для e2e-подтверждения чата в текущем окружении smoke.
 
 Требуется:
 
-- отдельный smoke-прогон доставки.
+- выполнить smoke с реальными локально доступными credentials;
+- получить `PASS` от Telegram API (`sendMessage ok=true`);
+- вручную подтвердить появление сообщения в целевом allowed chat.
