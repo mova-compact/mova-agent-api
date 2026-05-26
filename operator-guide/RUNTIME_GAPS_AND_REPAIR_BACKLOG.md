@@ -2,38 +2,41 @@
 
 Дата фиксации: `2026-05-26`
 
-## Gap 1: Human gate continuation unstable
+## Closed 1: Human gate continuation stabilized
 
 Факт:
 
-- `POST /contracts/runs/{run_id}/decision` в live-проверке возвращал:
-  - `404 contract_run_not_found`
-  - `404 contract_not_found`
+- после repair-pass continuation проверен end-to-end:
+  - `waiting_human`
+  - `POST /contracts/runs/{run_id}/decision`
+  - финальный `completed` + evidence retrieval.
 
 Статус:
 
-- `partially verified`
+- `verified` (после исправления continuity хранения состояния).
 
 Требуется:
 
-- отдельная repair-задача.
+- мониторинг повторяемости в следующих smoke-pass.
 
-## Gap 2: `/actions/run` restricted by connector
+## Closed 2: `/actions/run` semantics clarified
 
 Факт:
 
-- в live-проверке получен:
+- `POST /actions/run` успешно работает на поддерживаемом connector-path:
+  - `connector.http.generic.v1`
+  - allowlisted `endpoint_ref`.
+- Для неподдерживаемого connector-path возвращается:
   - `403 connector_execution_failed`
-  - `connector_denied`
+  - `connector_denied`.
 
 Статус:
 
-- `partially verified`
+- `verified` как expected protected behavior.
 
 Требуется:
 
-- либо зафиксировать как ожидаемый policy/connector-результат для этого контура;
-- либо исправить connector setup, если это должен быть рабочий путь.
+- поддерживать операторские payloads в рамках allowlist и не считать `connector_denied` runtime bug без контекста.
 
 ## Gap 3: Schedule operator interface missing
 
@@ -79,4 +82,3 @@
 Требуется:
 
 - отдельный smoke-прогон доставки.
-

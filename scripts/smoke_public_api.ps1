@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$requestPath = "D:/Projects_MOVA/mova-agent-api/examples/agent_request_minimal.json"
+$requestPath = "D:/Projects_MOVA/mova-agent-api/examples/agent_request_http_generic_webhook.json"
 $payload = Get-Content -Raw $requestPath | ConvertFrom-Json
 $rid = "req_smoke_{0}" -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $payload.request_id = $rid

@@ -31,26 +31,26 @@
 - `GET /contracts`
 - `POST /actions/validate`
 - `POST /contracts/{contract_id}/run`
+- `POST /contracts/runs/{run_id}/decision`
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/evidence`
+- `POST /actions/run` для поддерживаемого connector-path (`connector.http.generic.v1` + allowlisted `endpoint_ref`)
 
 ### `partially verified`
 
-- Human gate continuation через `POST /contracts/runs/{run_id}/decision`:
-  - остановка `waiting_human` подтверждена;
-  - продолжение решения в live-контуре нестабильно (в этом pass получен `404`).
-- `POST /actions/run`:
-  - маршрут доступен;
-  - текущий запуск упирается в `connector_denied` в проверенном контуре.
 - Telegram delivery:
   - след Telegram-шага виден в evidence;
   - полноценная операторская проверка доставки в конкретный чат в этом pass не зафиксирована как стабильная.
+- `/actions/run` c неподдерживаемым connector-path:
+  - `403 connector_execution_failed`
+  - `connector_denied`
+  - это ожидаемое protected behavior.
 
 ### `planned`
 
 - операторское управление расписаниями;
 - прозрачный операторский экран привязок выполнения;
-- стабильный human gate continuation без потери контекста между запросами.
+- расширенный operator UX для контрольной валидации привязок перед запуском.
 
 ### `not implemented`
 

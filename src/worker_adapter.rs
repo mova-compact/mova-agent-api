@@ -58,9 +58,14 @@ fn shared_contract_runs() -> Arc<Mutex<HashMap<String, ContractRunState>>> {
 
 const CONTRACT_INDEX_KEY: &str = "contract_admit:index";
 const CONTRACT_KEY_PREFIX: &str = "contract_admit:";
+const CONTRACT_RUN_KEY_PREFIX: &str = "contract_run:";
 
 fn contract_kv_key(contract_id: &str) -> String {
     format!("{CONTRACT_KEY_PREFIX}{contract_id}")
+}
+
+fn contract_run_kv_key(run_id: &str) -> String {
+    format!("{CONTRACT_RUN_KEY_PREFIX}{run_id}")
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -104,7 +109,7 @@ struct ContractDecisionRequest {
     decision: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ContractRunState {
     run_id: String,
     contract_id: String,
@@ -605,6 +610,38 @@ async fn kv_list_contract_ids(kv: &worker::kv::KvStore) -> std::result::Result<V
         .unwrap_or_default())
 }
 
+async fn kv_put_contract_run_state(
+    kv: &worker::kv::KvStore,
+    run_state: &ContractRunState,
+) -> std::result::Result<(), String> {
+    let payload = serde_json::to_string(run_state).map_err(|e| format!("serialize run state failed: {e}"))?;
+    kv.put(&contract_run_kv_key(&run_state.run_id), payload)
+        .map_err(|e| format!("kv put run state build failed: {e}"))?
+        .execute()
+        .await
+        .map_err(|e| format!("kv put run state execute failed: {e}"))?;
+    Ok(())
+}
+
+async fn kv_get_contract_run_state(
+    kv: &worker::kv::KvStore,
+    run_id: &str,
+) -> std::result::Result<Option<ContractRunState>, String> {
+    kv.get(&contract_run_kv_key(run_id))
+        .json::<ContractRunState>()
+        .await
+        .map_err(|e| format!("kv get run state failed: {e}"))
+}
+
+async fn kv_delete_contract_run_state(
+    kv: &worker::kv::KvStore,
+    run_id: &str,
+) -> std::result::Result<(), String> {
+    kv.delete(&contract_run_kv_key(run_id))
+        .await
+        .map_err(|e| format!("kv delete run state failed: {e}"))
+}
+
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -923,22 +960,31 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
                 }
                 if exec.waiting_for_human {
+                    let pending = ContractRunState {
+                        run_id: run_id.clone(),
+                        contract_id: contract_id.clone(),
+                        current_step_id: exec.current_step_id.clone(),
+                        status: exec.status.clone(),
+                        waiting_for_human: true,
+                        trace_ref,
+                        outcomes,
+                    };
                     let mut runs = state
                         .contract_runs
                         .lock()
                         .expect("contract run lock poisoned");
-                    runs.insert(
-                        run_id.clone(),
-                        ContractRunState {
-                            run_id: run_id.clone(),
-                            contract_id: contract_id.clone(),
-                            current_step_id: exec.current_step_id.clone(),
-                            status: exec.status.clone(),
-                            waiting_for_human: true,
-                            trace_ref,
-                            outcomes,
-                        },
-                    );
+                    runs.insert(run_id.clone(), pending.clone());
+                    drop(runs);
+                    if let Some(kv) = &state.kv_store {
+                        if let Err(err) = kv_put_contract_run_state(kv, &pending).await {
+                            return contract_error(
+                                503,
+                                "storage_unavailable",
+                                "contract run state persistence failed",
+                                vec![err],
+                            );
+                        }
+                    }
                 }
                 Response::from_json(&ContractRunResponse {
                     run_id,
@@ -974,18 +1020,40 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     );
                 }
                 let run_state = {
-                    let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
-                    runs.remove(&run_id)
+                    let runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                    runs.get(&run_id).cloned()
                 };
                 let run_state = match run_state {
                     Some(v) => v,
                     None => {
+                        if let Some(kv) = &state.kv_store {
+                            match kv_get_contract_run_state(kv, &run_id).await {
+                                Ok(Some(v)) => v,
+                                Ok(None) => {
+                                    return contract_error(
+                                        404,
+                                        "contract_run_not_found",
+                                        "contract run was not found or not waiting_human",
+                                        vec![format!("run_id: {run_id}")],
+                                    );
+                                }
+                                Err(err) => {
+                                    return contract_error(
+                                        503,
+                                        "storage_unavailable",
+                                        "contract run state read failed",
+                                        vec![err],
+                                    );
+                                }
+                            }
+                        } else {
                         return contract_error(
                             404,
                             "contract_run_not_found",
                             "contract run was not found or not waiting_human",
                             vec![format!("run_id: {run_id}")],
                         );
+                        }
                     }
                 };
                 let admitted = {
@@ -998,12 +1066,34 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 let admitted = match admitted {
                     Some(c) => c,
                     None => {
+                        if let Some(kv) = &state.kv_store {
+                            match kv_get_contract(kv, &run_state.contract_id).await {
+                                Ok(Some(c)) => c,
+                                Ok(None) => {
+                                    return contract_error(
+                                        404,
+                                        "contract_not_found",
+                                        "admitted contract for run was not found",
+                                        vec![format!("contract_id: {}", run_state.contract_id)],
+                                    );
+                                }
+                                Err(err) => {
+                                    return contract_error(
+                                        503,
+                                        "storage_unavailable",
+                                        "contract registry read failed",
+                                        vec![err],
+                                    );
+                                }
+                            }
+                        } else {
                         return contract_error(
                             404,
                             "contract_not_found",
                             "admitted contract for run was not found",
                             vec![format!("contract_id: {}", run_state.contract_id)],
                         );
+                        }
                     }
                 };
                 let exec = match execute_contract_flow(
@@ -1062,6 +1152,20 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 };
                 if let Err(err) = state.run_store.put_snapshot(snapshot).await {
                     return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
+                }
+                {
+                    let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                    runs.remove(&run_id);
+                }
+                if let Some(kv) = &state.kv_store {
+                    if let Err(err) = kv_delete_contract_run_state(kv, &run_id).await {
+                        return contract_error(
+                            503,
+                            "storage_unavailable",
+                            "contract run state cleanup failed",
+                            vec![err],
+                        );
+                    }
                 }
                 Response::from_json(&json!({
                     "run_id": run_state.run_id,
