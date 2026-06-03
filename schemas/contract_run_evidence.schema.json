@@ -23,7 +23,7 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["steps", "gates", "transitions"],
+      "required": ["steps", "gates", "transitions", "transition_failures"],
       "properties": {
         "steps": {
           "type": "array",
@@ -44,11 +44,73 @@
               "decision": { "type": "string" },
               "reason_code": { "type": "string" },
               "admission": { "type": "object" },
-              "connector_summary": { "type": "object" }
+              "connector_summary": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "connector_id",
+                      "endpoint_ref",
+                      "method",
+                      "side_effect_intent",
+                      "connector_status",
+                      "provider",
+                      "connector_mode",
+                      "response_preview",
+                      "attempts",
+                      "timeout_ms"
+                    ],
+                    "properties": {
+                      "connector_id": { "type": "string" },
+                      "endpoint_ref": { "type": "string" },
+                      "method": { "type": "string" },
+                      "side_effect_intent": { "type": "string" },
+                      "connector_status": { "type": "string" },
+                      "provider": { "type": "string" },
+                      "connector_mode": { "type": "string" },
+                      "response_preview": { "type": "object" },
+                      "attempts": { "type": "integer" },
+                      "timeout_ms": { "type": "integer" }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["provider", "decision_basis"],
+                    "properties": {
+                      "provider": { "type": "string" },
+                      "decision_basis": { "type": "string" }
+                    }
+                  }
+                ]
+              }
             }
           }
         },
-        "gates": { "type": "array", "items": { "type": "object" } },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "gate_id",
+              "step_id",
+              "requested_operation_id",
+              "decision",
+              "decided_by",
+              "reason_code"
+            ],
+            "properties": {
+              "gate_id": { "type": "string" },
+              "step_id": { "type": "string" },
+              "requested_operation_id": { "type": "string" },
+              "decision": { "type": "string" },
+              "decided_by": { "type": "string" },
+              "reason_code": { "type": "string" }
+            }
+          }
+        },
         "transitions": {
           "type": "array",
           "items": {
@@ -69,6 +131,21 @@
               "target_step_id": { "type": ["string", "null"] },
               "terminal_status": { "type": ["string", "null"] },
               "reason_code": { "type": "string" }
+            }
+          }
+        },
+        "transition_failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from_step_id", "outcome", "reason_code", "error_code", "message"],
+            "properties": {
+              "from_step_id": { "type": "string" },
+              "outcome": { "type": "string" },
+              "reason_code": { "type": "string" },
+              "error_code": { "type": "string" },
+              "message": { "type": "string" }
             }
           }
         }

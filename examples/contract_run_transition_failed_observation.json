@@ -1,0 +1,16 @@
+{
+  "run_id": "contract_run_req_contract_001",
+  "step_id": "step_001",
+  "event_type": "contract_run.transition_failed",
+  "timestamp": "2026-05-23T08:33:00Z",
+  "subject": {},
+  "result": {
+    "from_step_id": "step_001",
+    "outcome": "default",
+    "reason_code": "TRANSITION_NOT_FOUND",
+    "error_code": "transition_not_found",
+    "message": "missing transition for step step_001 and outcome default"
+  },
+  "metadata": {},
+  "evidence_ref": "ev_contract_run_req_contract_001_004"
+}

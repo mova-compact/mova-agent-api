@@ -8,6 +8,10 @@
 - human gate reject/approve use flow transition semantics
 - evidence includes transition trace
 - second contract with non-fixture step ids proves no `step_001` dependency
+- non-fixture gate evidence preserves `alpha_gate`
+- executable steps without `operation_id` are rejected
+- duplicate step ids are rejected at registration
+- missing transition targets are rejected at registration
 
 ## Commands run
 

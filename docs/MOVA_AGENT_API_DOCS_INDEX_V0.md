@@ -12,6 +12,8 @@
   - proof that connector_action steps now execute through guarded connector boundary.
 - `docs/MOVA_AGENT_API_FLOW_TRANSITION_PROOF_V0.md`
   - proof that contract-run transitions are now flow-driven instead of fixture-id-driven.
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_PRODUCTION_HARDENING_PROOF_V0.md`
+  - proof that contract-run corridor hardening closes remaining V0 boundary leaks.
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
   - invariant list for controlled execution without bypass paths.
 - `schemas/*.schema.json`
@@ -43,6 +45,7 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_REAL_EXECUTION_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_FLOW_TRANSITION_PROOF_V0.md`
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_PRODUCTION_HARDENING_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_PRODUCTION_AUTH_CONTRACT_V0.md`

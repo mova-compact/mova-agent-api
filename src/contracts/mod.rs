@@ -144,7 +144,7 @@ fn validate_flow_shape(
         }
         if !ids.insert(step.id.clone()) {
             return Err(ContractRegistryError::new(
-                "contract_flow_invalid",
+                "contract_duplicate_step_id",
                 format!("duplicate step id: {}", step.id),
             ));
         }
@@ -168,7 +168,7 @@ fn validate_flow_shape(
 
     if !ids.contains(&flow.entry) {
         return Err(ContractRegistryError::new(
-            "contract_flow_invalid",
+            "contract_step_not_found",
             format!("flow.entry '{}' does not match any step id", flow.entry),
         ));
     }
@@ -199,13 +199,13 @@ fn validate_flow_shape(
             if let Some(step_ref) = target_obj.get("step").and_then(|v| v.as_str()) {
                 if !ids.contains(step_ref) {
                     return Err(ContractRegistryError::new(
-                        "contract_flow_invalid",
+                        "contract_transition_target_missing",
                         format!("step {} points to unknown step {}", step.id, step_ref),
                     ));
                 }
             } else if target_obj.get("terminal").and_then(|v| v.as_str()).is_none() {
                 return Err(ContractRegistryError::new(
-                    "contract_flow_invalid",
+                    "contract_transition_invalid",
                     format!("step {} target must contain step or terminal", step.id),
                 ));
             }
@@ -345,6 +345,6 @@ mod tests {
             }],
         };
         let err = validate_flow_shape(&flow, &HashSet::new()).unwrap_err();
-        assert_eq!(err.code, "contract_flow_invalid");
+        assert_eq!(err.code, "contract_transition_target_missing");
     }
 }

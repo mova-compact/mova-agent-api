@@ -379,6 +379,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /contracts/register:
+    post:
+      summary: Register an admitted contract package
+      operationId: registerContract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Contract registered
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - contract_id
+                  - admitted
+                  - mode
+                properties:
+                  contract_id:
+                    type: string
+                  admitted:
+                    type: boolean
+                  mode:
+                    type: string
+        "400":
+          description: Invalid contract package or invalid contract-run flow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /contracts/{contract_id}/runs:
     post:
       summary: Start a controlled contract run
@@ -534,7 +569,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Stale step or run-state conflict
+          description: Stale step, run-state conflict, or transition resolution failure
           content:
             application/json:
               schema:
@@ -637,7 +672,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Gate conflict
+          description: Gate conflict or transition resolution failure
           content:
             application/json:
               schema:
@@ -1161,6 +1196,7 @@ components:
             - steps
             - gates
             - transitions
+            - transition_failures
           properties:
             steps:
               type: array
@@ -1185,11 +1221,76 @@ components:
                   admission:
                     type: object
                   connector_summary:
-                    type: object
+                    oneOf:
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - connector_id
+                          - endpoint_ref
+                          - method
+                          - side_effect_intent
+                          - connector_status
+                          - provider
+                          - connector_mode
+                          - response_preview
+                          - attempts
+                          - timeout_ms
+                        properties:
+                          connector_id:
+                            type: string
+                          endpoint_ref:
+                            type: string
+                          method:
+                            type: string
+                          side_effect_intent:
+                            type: string
+                          connector_status:
+                            type: string
+                          provider:
+                            type: string
+                          connector_mode:
+                            type: string
+                          response_preview:
+                            type: object
+                          attempts:
+                            type: integer
+                          timeout_ms:
+                            type: integer
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - provider
+                          - decision_basis
+                        properties:
+                          provider:
+                            type: string
+                          decision_basis:
+                            type: string
             gates:
               type: array
               items:
                 type: object
+                additionalProperties: false
+                required:
+                  - gate_id
+                  - step_id
+                  - requested_operation_id
+                  - decision
+                  - decided_by
+                  - reason_code
+                properties:
+                  gate_id:
+                    type: string
+                  step_id:
+                    type: string
+                  requested_operation_id:
+                    type: string
+                  decision:
+                    type: string
+                  decided_by:
+                    type: string
+                  reason_code:
+                    type: string
             transitions:
               type: array
               items:
@@ -1216,6 +1317,28 @@ components:
                     type: string
                     nullable: true
                   reason_code:
+                    type: string
+            transition_failures:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - from_step_id
+                  - outcome
+                  - reason_code
+                  - error_code
+                  - message
+                properties:
+                  from_step_id:
+                    type: string
+                  outcome:
+                    type: string
+                  reason_code:
+                    type: string
+                  error_code:
+                    type: string
+                  message:
                     type: string
         trace_ref:
           type: string

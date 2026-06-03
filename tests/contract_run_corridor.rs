@@ -208,6 +208,7 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert_eq!(execute_gated.status(), StatusCode::ACCEPTED);
 
     let evidence = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -231,6 +232,7 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert_eq!(connector_summary["method"], "POST");
     assert_ne!(connector_summary["provider"], "contract_run_fixture");
     assert_eq!(connector_summary["provider"], "deterministic_local_http_generic");
+    assert!(connector_summary.get("resolved_url").is_none());
     let admission = &evidence_json["evidence"]["steps"][0]["admission"];
     assert_eq!(admission["allowed_connector_id"], "connector.http.generic.v1");
     assert_eq!(admission["allowed_endpoint_ref"], "webhook_site_test");
@@ -411,6 +413,7 @@ async fn contract_run_corridor_reject_gate_blocks_run() {
     assert_eq!(reject.status(), StatusCode::OK);
 
     let status = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -423,6 +426,31 @@ async fn contract_run_corridor_reject_gate_blocks_run() {
     let status_body = to_bytes(status.into_body(), usize::MAX).await.unwrap();
     let status_json: Value = serde_json::from_slice(&status_body).unwrap();
     assert_eq!(status_json["status"], "blocked");
+    assert_eq!(status_json["gate"]["status"], "resolved");
+    assert_eq!(status_json["gate"]["decision"], "reject");
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/evidence"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(evidence_json["evidence"]["gates"][0]["decision"], "reject");
+    assert_eq!(evidence_json["evidence"]["gates"][0]["step_id"], "step_002");
+    assert_eq!(evidence_json["evidence"]["gates"][0]["requested_operation_id"], "op_send_report");
+    let transitions = evidence_json["evidence"]["transitions"].as_array().unwrap();
+    assert!(transitions.iter().any(|transition| {
+        transition["from_step_id"] == "step_002"
+            && transition["outcome"] == "reject"
+            && transition["terminal_status"] == "blocked"
+    }));
 }
 
 #[tokio::test]
@@ -646,13 +674,15 @@ async fn contract_run_corridor_uses_flow_driven_non_fixture_step_ids() {
     let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
     assert_eq!(evidence_json["status"], "completed");
     assert_eq!(evidence_json["evidence"]["transitions"][0]["target_step_id"], "alpha_gate");
+    assert_eq!(evidence_json["evidence"]["gates"][0]["step_id"], "alpha_gate");
+    assert_eq!(evidence_json["evidence"]["gates"][0]["requested_operation_id"], "op_send_report");
 }
 
 #[tokio::test]
-async fn contract_run_corridor_fails_deterministically_on_missing_transition() {
+async fn contract_run_corridor_registration_rejects_missing_operation_id() {
     let app = router();
     let register_payload = json!({
-        "contract_id": "broken_transition_v0",
+        "contract_id": "missing_operation_id_v0",
         "execution_type": "agent",
         "inline_flow_json": {
             "version": "1.0",
@@ -661,7 +691,6 @@ async fn contract_run_corridor_fails_deterministically_on_missing_transition() {
             "steps": [
                 {
                     "id": "broken_start",
-                    "operation_id": "op_notify_webhook",
                     "step_type": "connector_action",
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
@@ -670,7 +699,7 @@ async fn contract_run_corridor_fails_deterministically_on_missing_transition() {
                         "method": "POST",
                         "side_effect_intent": "external_network"
                     },
-                    "next": {"approve": {"terminal": "completed"}}
+                    "next": {"default": {"terminal": "completed"}}
                 }
             ]
         }
@@ -687,39 +716,188 @@ async fn contract_run_corridor_fails_deterministically_on_missing_transition() {
         )
         .await
         .unwrap();
-    assert_eq!(register.status(), StatusCode::CREATED);
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_operation_id_missing");
+}
 
-    let start = app
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_duplicate_step_id() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "duplicate_step_id_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "duplicate ids",
+            "entry": "dup",
+            "steps": [
+                {
+                    "id": "dup",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "external_network"
+                    },
+                    "next": {"default": {"terminal": "completed"}}
+                },
+                {
+                    "id": "dup",
+                    "step_type": "terminal",
+                    "execution_mode": "DETERMINISTIC",
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/broken_transition_v0/runs")
+                .uri("/contracts/register")
                 .header("content-type", "application/json")
-                .body(Body::from(contract_run_start_body()))
+                .body(Body::from(register_payload.to_string()))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(start.status(), StatusCode::ACCEPTED);
-    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
-    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
-    let run_id = start_json["run_id"].as_str().unwrap();
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_duplicate_step_id");
+}
 
-    let execute = app
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_missing_entry() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "missing_entry_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "missing entry",
+            "entry": "missing",
+            "steps": [
+                {
+                    "id": "start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "external_network"
+                    },
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/contract-runs/{run_id}/steps/broken_start/execute"))
+                .uri("/contracts/register")
                 .header("content-type", "application/json")
-                .body(Body::from(execute_body("op_notify_webhook")))
+                .body(Body::from(register_payload.to_string()))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(execute.status(), StatusCode::BAD_GATEWAY);
-    let execute_body_json = to_bytes(execute.into_body(), usize::MAX).await.unwrap();
-    let execute_json: Value = serde_json::from_slice(&execute_body_json).unwrap();
-    assert_eq!(execute_json["error"]["code"], "transition_not_found");
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_step_not_found");
+}
+
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_missing_transition_target() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "missing_transition_target_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "missing target",
+            "entry": "start",
+            "steps": [
+                {
+                    "id": "start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "external_network"
+                    },
+                    "next": {"default": {"step": "missing_step"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_transition_target_missing");
+}
+
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_missing_connector_metadata() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "missing_connector_metadata_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "missing connector metadata",
+            "entry": "start",
+            "steps": [
+                {
+                    "id": "start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_connector_metadata_missing");
 }

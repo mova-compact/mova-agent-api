@@ -25,6 +25,12 @@
 21. Transition target is resolved only from admitted contract `flow.next`.
 22. Client-provided next step is forbidden.
 23. Missing transition fails deterministically.
+24. Runtime never invents `operation_id` for executable steps.
+25. Executable steps without `operation_id` are rejected before run start.
+26. Public evidence must not expose resolved provider URLs.
+27. Gate evidence must preserve the actual flow step id.
+28. Broken transition targets are rejected during contract admission.
+29. Transition failure is recorded before error response.
 
 ## Known V0 limitation
 

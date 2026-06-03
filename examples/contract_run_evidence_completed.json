@@ -29,14 +29,15 @@
             "message": "contract-run smoke"
           },
           "attempts": 1,
-          "timeout_ms": 10000,
-          "resolved_url": "https://webhook.site/test-endpoint"
+          "timeout_ms": 10000
         }
       }
     ],
     "gates": [
       {
         "gate_id": "gate_contract_run_req_contract_001_step_002",
+        "step_id": "step_002",
+        "requested_operation_id": "op_send_report",
         "decision": "approve",
         "decided_by": "user_001",
         "reason_code": "HUMAN_GATE_APPROVED"
@@ -59,6 +60,8 @@
         "terminal_status": null,
         "reason_code": "TRANSITION_APPLIED"
       }
+    ],
+    "transition_failures": [
     ]
   },
   "trace_ref": "trace_contract_001",

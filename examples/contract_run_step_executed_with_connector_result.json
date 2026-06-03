@@ -27,8 +27,7 @@
         "message": "contract-run smoke"
       },
       "attempts": 1,
-      "timeout_ms": 10000,
-      "resolved_url": "https://webhook.site/test-endpoint"
+      "timeout_ms": 10000
     }
   },
   "metadata": {},

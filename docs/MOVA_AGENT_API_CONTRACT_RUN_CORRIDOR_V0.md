@@ -27,8 +27,18 @@ Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target
 
 Contract-run state no longer advances by fixture step ids.
 After each step, runtime resolves `flow.steps[].next` using deterministic outcome keys.
-Supported V0 outcomes: `default`, `approve`, `reject`.
-Supported V0 targets: next step, terminal completed, terminal blocked.
+Supported V0 outcomes: `default`, `approve`, `reject`, `error`.
+Supported V0 targets: next step, terminal completed, terminal blocked, terminal failed.
+
+## Production-grade V0 hardening
+
+- flow validation runs before contract admission and before run start
+- executable steps require explicit `operation_id`
+- no implicit fixture operation fallback remains
+- gate evidence preserves actual `step_id` and `requested_operation_id`
+- transition failures are recorded before error response
+- public evidence exposes `endpoint_ref` but not resolved provider URL
+- transition failures use `409`, connector runtime failures use `502`
 
 ## Boundary verdict
 

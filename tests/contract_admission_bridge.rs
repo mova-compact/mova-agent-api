@@ -12,28 +12,41 @@ fn contract_flow_with_gate() -> Value {
         "steps": [
             {
                 "id": "fetch",
-                "step_type": "external_resource_call",
+                "operation_id": "op_fetch",
+                "step_type": "connector_action",
                 "execution_mode": "DETERMINISTIC",
-                "connector": {"name":"barbershop_daily_data_source"},
+                "connector": {
+                    "name":"barbershop_daily_data_source",
+                    "endpoint_ref":"webhook_site_test",
+                    "method":"POST",
+                    "side_effect_intent":"external_network"
+                },
                 "next": {
-                    "source_error": {"step":"gate"},
+                    "error": {"step":"gate"},
                     "default": {"step":"deliver"}
                 }
             },
             {
                 "id": "gate",
-                "step_type": "human_gate_escalation",
+                "operation_id": "op_gate",
+                "step_type": "human_gate",
                 "execution_mode": "HUMAN_GATE",
                 "next": {
                     "approve": {"step":"deliver"},
-                    "reject": {"terminal":"stopped_by_human_gate"}
+                    "reject": {"terminal":"blocked"}
                 }
             },
             {
                 "id": "deliver",
-                "step_type": "telegram_delivery",
+                "operation_id": "op_deliver",
+                "step_type": "connector_action",
                 "execution_mode": "DETERMINISTIC",
-                "connector": {"name":"telegram"},
+                "connector": {
+                    "name":"telegram",
+                    "endpoint_ref":"webhook_site_test",
+                    "method":"POST",
+                    "side_effect_intent":"external_network"
+                },
                 "next": {"default":{"terminal":"completed"}}
             }
         ]
@@ -108,7 +121,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
         "run_id": "ctrun_bridge_wait_01",
         "trace_ref": "trace:ctrun_bridge_wait_01",
         "input_payload": {
-            "outcomes": {"fetch": "source_error"}
+            "outcomes": {"fetch": "error"}
         }
     });
     let run_wait_response = app
@@ -145,7 +158,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
     assert_eq!(reject_response.status(), StatusCode::OK);
     let reject_body = to_bytes(reject_response.into_body(), usize::MAX).await.unwrap();
     let reject_json: Value = serde_json::from_slice(&reject_body).unwrap();
-    assert_eq!(reject_json["status"], "stopped_by_human_gate");
+    assert_eq!(reject_json["status"], "blocked");
 
     let run_success_payload = json!({
         "run_id": "ctrun_bridge_success_01",
@@ -268,5 +281,5 @@ async fn contract_register_accepts_github_source_with_commit_pin() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

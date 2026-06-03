@@ -45,6 +45,7 @@ Controlled contract-run corridor:
 - flat action path and controlled contract-run corridor available as local V0 behavior
 - contract-run connector_action steps execute through guarded `ConnectorExecutor` boundary
 - contract-run transitions are resolved from admitted contract `flow.next`
+- contract-run flow is validated before admission, executable steps require explicit `operation_id`, and public evidence avoids resolved provider URLs
 - no legacy implementation copied here
 
 ## Source of truth rule
