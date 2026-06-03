@@ -20,6 +20,7 @@ pub mod request;
 pub mod runtime;
 pub mod secrets;
 pub mod storage;
+pub mod worker_surface;
 
 #[cfg(all(feature = "worker", target_arch = "wasm32"))]
 mod worker_adapter;

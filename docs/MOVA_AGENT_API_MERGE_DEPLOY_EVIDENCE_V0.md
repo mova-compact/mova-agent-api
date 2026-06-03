@@ -49,4 +49,33 @@
 - no dynamic routing
 - no autonomous planning
 - no arbitrary provider SDK integrations
-- deployed Worker surface does not currently expose contract-run corridor routes
+- live contract-run execute path currently hits connector policy deny (`endpoint_scope_denied`) before reaching gate flow
+
+## Cloudflare Worker route parity fix
+- branch: `fix/cloudflare-contract-run-route-parity`
+- commit: `fix: expose contract-run corridor routes in worker`
+- deployed version id: `ab63cd45-f0fc-4ab4-9aa8-2bc4c1e4675a`
+- health: PASS
+- ready: PASS
+- capabilities: PASS, `contract_run.supported=true`, `worker_surface=true`
+- contract-run start: PASS
+  `POST /contracts/daily_owner_report_v0/runs` -> `202`
+  `run_id=contract_run_req_contract_001`
+- contract-run status: PASS
+  `GET /contract-runs/contract_run_req_contract_001` -> `200`
+- contract-run next: PASS
+  `GET /contract-runs/contract_run_req_contract_001/next` -> `200`
+  `step_id=step_001`, `operation_id=op_notify_webhook`
+- contract-run execute: WARN
+  `POST /contract-runs/contract_run_req_contract_001/steps/step_001/execute` -> `403`
+  `connector_execution_failed`, `connector_code: endpoint_scope_denied`
+- gate: PASS
+  `GET /contract-runs/contract_run_req_contract_001/gates/current` -> `200`
+  current result before execution: `{"gate": null}`
+- evidence: PASS
+  `GET /contract-runs/contract_run_req_contract_001/evidence` -> `200`
+- verdict: `PASS_WITH_WARNINGS`
+
+Notes:
+- Route parity is fixed at Worker adapter level: contract-run corridor routes no longer return `404` because of missing Worker route match.
+- Local `wrangler dev` smoke could not be completed in this environment because the local Workers runtime binary supports compatibility dates only through `2026-05-01`, while this Worker requires `2026-05-23`.

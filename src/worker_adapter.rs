@@ -14,12 +14,22 @@ use crate::contracts::{
     extract_outcomes_map, flow_step_by_id, parse_contract_connector_requirements, parse_inline_flow_json,
     pick_next_target, validate_admitted_contract, AdmittedContract, ContractFlowStep, ContractRegistryError,
 };
-use crate::evidence::{build_evidence_response, RunStatus};
+use crate::contract_run::{
+    contract_steps_from_flow, gate_for_step, resolve_flow_transition, validate_contract_run_flow,
+    ContractRunRequest as CorridorContractRunRequest, ContractRunState as CorridorContractRunState,
+    ContractRunStatus as CorridorContractRunStatus, ContractStepOutcome, ContractTransition,
+};
+use crate::contract_step::{ContractStepStatus, ContractStepType};
+use crate::evidence::{build_contract_run_evidence_response, build_evidence_response, RunStatus};
 use crate::execution::FlatExecutionPlan;
+use crate::gate::{HumanGate, HumanGateDecision, HumanGateResolutionRequest, HumanGateStatus};
 use crate::observation::{ObservationJournal, ObservationRecord};
+use crate::operation_admission::OperationAdmission;
 use crate::policy::{AdmissionDecision, PolicyAdmission};
 use crate::request::{parse_request_envelope, validate_request_envelope};
+use crate::secrets::redact_json;
 use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
+use crate::worker_surface::{match_worker_route, WorkerRoute};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -41,7 +51,9 @@ struct WorkerState {
     denied_client_ids: Vec<String>,
     kv_store: Option<worker::kv::KvStore>,
     admitted_contracts: Arc<Mutex<HashMap<String, AdmittedContract>>>,
-    contract_runs: Arc<Mutex<HashMap<String, ContractRunState>>>,
+    legacy_contract_runs: Arc<Mutex<HashMap<String, LegacyContractRunState>>>,
+    contract_runs: Arc<Mutex<HashMap<String, CorridorContractRunState>>>,
+    contract_run_observations: Arc<Mutex<HashMap<String, Vec<ObservationRecord>>>>,
 }
 
 fn shared_admitted_contracts() -> Arc<Mutex<HashMap<String, AdmittedContract>>> {
@@ -51,22 +63,44 @@ fn shared_admitted_contracts() -> Arc<Mutex<HashMap<String, AdmittedContract>>> 
         .clone()
 }
 
-fn shared_contract_runs() -> Arc<Mutex<HashMap<String, ContractRunState>>> {
-    static RUNS: OnceLock<Arc<Mutex<HashMap<String, ContractRunState>>>> = OnceLock::new();
+fn shared_legacy_contract_runs() -> Arc<Mutex<HashMap<String, LegacyContractRunState>>> {
+    static RUNS: OnceLock<Arc<Mutex<HashMap<String, LegacyContractRunState>>>> = OnceLock::new();
     RUNS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn shared_contract_runs() -> Arc<Mutex<HashMap<String, CorridorContractRunState>>> {
+    static RUNS: OnceLock<Arc<Mutex<HashMap<String, CorridorContractRunState>>>> = OnceLock::new();
+    RUNS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn shared_contract_run_observations() -> Arc<Mutex<HashMap<String, Vec<ObservationRecord>>>> {
+    static OBS: OnceLock<Arc<Mutex<HashMap<String, Vec<ObservationRecord>>>>> = OnceLock::new();
+    OBS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
 }
 
 const CONTRACT_INDEX_KEY: &str = "contract_admit:index";
 const CONTRACT_KEY_PREFIX: &str = "contract_admit:";
-const CONTRACT_RUN_KEY_PREFIX: &str = "contract_run:";
+const LEGACY_CONTRACT_RUN_KEY_PREFIX: &str = "legacy_contract_run:";
+const CONTRACT_RUN_STATE_KEY_PREFIX: &str = "contract_run:";
+const CONTRACT_RUN_OBSERVATION_KEY_PREFIX: &str = "contract_run_observations:";
 
 fn contract_kv_key(contract_id: &str) -> String {
     format!("{CONTRACT_KEY_PREFIX}{contract_id}")
 }
 
-fn contract_run_kv_key(run_id: &str) -> String {
-    format!("{CONTRACT_RUN_KEY_PREFIX}{run_id}")
+fn legacy_contract_run_kv_key(run_id: &str) -> String {
+    format!("{LEGACY_CONTRACT_RUN_KEY_PREFIX}{run_id}")
+}
+
+fn contract_run_state_kv_key(run_id: &str) -> String {
+    format!("{CONTRACT_RUN_STATE_KEY_PREFIX}{run_id}:state")
+}
+
+fn contract_run_observations_kv_key(run_id: &str) -> String {
+    format!("{CONTRACT_RUN_OBSERVATION_KEY_PREFIX}{run_id}:observations")
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -126,7 +160,7 @@ struct ContractDecisionRequest {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ContractRunState {
+struct LegacyContractRunState {
     run_id: String,
     contract_id: String,
     current_step_id: String,
@@ -403,15 +437,87 @@ fn state_from_env(env: &Env) -> WorkerState {
         ))
     };
 
+    let admitted_contracts = shared_admitted_contracts();
+    seed_default_contracts(&admitted_contracts);
+
     WorkerState {
         run_store,
         auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
         connector_executor,
         denied_client_ids,
         kv_store,
-        admitted_contracts: shared_admitted_contracts(),
+        admitted_contracts,
+        legacy_contract_runs: shared_legacy_contract_runs(),
         contract_runs: shared_contract_runs(),
+        contract_run_observations: shared_contract_run_observations(),
     }
+}
+
+fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, AdmittedContract>>>) {
+    let mut contracts = admitted_contracts
+        .lock()
+        .expect("contract registry lock poisoned");
+    if contracts.contains_key("daily_owner_report_v0") {
+        return;
+    }
+
+    let flow = parse_inline_flow_json(&json!({
+        "version": "1.0",
+        "description": "controlled contract-run corridor fixture",
+        "entry": "step_001",
+        "steps": [
+            {
+                "id": "step_001",
+                "step_type": "connector_action",
+                "operation_id": "op_notify_webhook",
+                "execution_mode": "DETERMINISTIC",
+                "connector": {
+                    "name":"connector.http.generic.v1",
+                    "endpoint_ref":"webhook_site_test",
+                    "method":"POST",
+                    "side_effect_intent":"external_network"
+                },
+                "next": {"default": {"step":"step_002"}}
+            },
+            {
+                "id": "step_002",
+                "step_type": "human_gate",
+                "operation_id": "op_send_report",
+                "execution_mode": "HUMAN_GATE",
+                "next": {
+                    "approve": {"step":"step_003"},
+                    "reject": {"terminal":"blocked"}
+                }
+            },
+            {
+                "id": "step_003",
+                "step_type": "terminal",
+                "execution_mode": "DETERMINISTIC",
+                "next": {"default": {"terminal":"completed"}}
+            }
+        ]
+    }))
+    .expect("fixture contract must parse");
+
+    contracts.insert(
+        "daily_owner_report_v0".to_string(),
+        AdmittedContract {
+            contract_id: "daily_owner_report_v0".to_string(),
+            execution_type: "agent".to_string(),
+            source_type: Some("fixture".to_string()),
+            source_url: None,
+            commit_sha: None,
+            contract_path: None,
+            registered_at: Some("2026-05-23T08:30:00Z".to_string()),
+            admitted: Some(true),
+            manifest: None,
+            flow,
+            policy: None,
+            connector_requirements: None,
+            evidence_expectations: None,
+            open_questions: None,
+        },
+    );
 }
 
 fn parse_side_effect_intent(connector_context: &Value) -> SideEffectIntent {
@@ -903,12 +1009,12 @@ async fn kv_list_contract_ids(kv: &worker::kv::KvStore) -> std::result::Result<V
         .unwrap_or_default())
 }
 
-async fn kv_put_contract_run_state(
+async fn kv_put_legacy_contract_run_state(
     kv: &worker::kv::KvStore,
-    run_state: &ContractRunState,
+    run_state: &LegacyContractRunState,
 ) -> std::result::Result<(), String> {
     let payload = serde_json::to_string(run_state).map_err(|e| format!("serialize run state failed: {e}"))?;
-    kv.put(&contract_run_kv_key(&run_state.run_id), payload)
+    kv.put(&legacy_contract_run_kv_key(&run_state.run_id), payload)
         .map_err(|e| format!("kv put run state build failed: {e}"))?
         .execute()
         .await
@@ -916,29 +1022,1548 @@ async fn kv_put_contract_run_state(
     Ok(())
 }
 
-async fn kv_get_contract_run_state(
+async fn kv_get_legacy_contract_run_state(
     kv: &worker::kv::KvStore,
     run_id: &str,
-) -> std::result::Result<Option<ContractRunState>, String> {
-    kv.get(&contract_run_kv_key(run_id))
-        .json::<ContractRunState>()
+) -> std::result::Result<Option<LegacyContractRunState>, String> {
+    kv.get(&legacy_contract_run_kv_key(run_id))
+        .json::<LegacyContractRunState>()
         .await
         .map_err(|e| format!("kv get run state failed: {e}"))
 }
 
-async fn kv_delete_contract_run_state(
+async fn kv_delete_legacy_contract_run_state(
     kv: &worker::kv::KvStore,
     run_id: &str,
 ) -> std::result::Result<(), String> {
-    kv.delete(&contract_run_kv_key(run_id))
+    kv.delete(&legacy_contract_run_kv_key(run_id))
         .await
         .map_err(|e| format!("kv delete run state failed: {e}"))
+}
+
+async fn kv_put_corridor_contract_run_state(
+    kv: &worker::kv::KvStore,
+    run_state: &CorridorContractRunState,
+) -> std::result::Result<(), String> {
+    let payload = serde_json::to_string(run_state).map_err(|e| format!("serialize run state failed: {e}"))?;
+    kv.put(&contract_run_state_kv_key(&run_state.run_id), payload)
+        .map_err(|e| format!("kv put run state build failed: {e}"))?
+        .execute()
+        .await
+        .map_err(|e| format!("kv put run state execute failed: {e}"))?;
+    Ok(())
+}
+
+async fn kv_get_corridor_contract_run_state(
+    kv: &worker::kv::KvStore,
+    run_id: &str,
+) -> std::result::Result<Option<CorridorContractRunState>, String> {
+    kv.get(&contract_run_state_kv_key(run_id))
+        .json::<CorridorContractRunState>()
+        .await
+        .map_err(|e| format!("kv get run state failed: {e}"))
+}
+
+async fn kv_put_corridor_contract_run_observations(
+    kv: &worker::kv::KvStore,
+    run_id: &str,
+    observations: &[ObservationRecord],
+) -> std::result::Result<(), String> {
+    let payload =
+        serde_json::to_string(observations).map_err(|e| format!("serialize run observations failed: {e}"))?;
+    kv.put(&contract_run_observations_kv_key(run_id), payload)
+        .map_err(|e| format!("kv put run observations build failed: {e}"))?
+        .execute()
+        .await
+        .map_err(|e| format!("kv put run observations execute failed: {e}"))?;
+    Ok(())
+}
+
+async fn kv_get_corridor_contract_run_observations(
+    kv: &worker::kv::KvStore,
+    run_id: &str,
+) -> std::result::Result<Vec<ObservationRecord>, String> {
+    Ok(kv
+        .get(&contract_run_observations_kv_key(run_id))
+        .json::<Vec<ObservationRecord>>()
+        .await
+        .map_err(|e| format!("kv get run observations failed: {e}"))?
+        .unwrap_or_default())
+}
+
+fn parse_side_effect_intent_str(value: &str) -> Option<SideEffectIntent> {
+    match value {
+        "none" => Some(SideEffectIntent::None),
+        "local_only" => Some(SideEffectIntent::LocalOnly),
+        "external_network" => Some(SideEffectIntent::ExternalNetwork),
+        "destructive" => Some(SideEffectIntent::Destructive),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContractStepConnectorMetadata {
+    connector_id: String,
+    endpoint_ref: Option<String>,
+    method: Option<String>,
+    side_effect_intent: Option<SideEffectIntent>,
+}
+
+fn current_contract_step(state: &CorridorContractRunState) -> Option<crate::contract_step::ContractStep> {
+    state
+        .steps
+        .iter()
+        .find(|step| step.step_id == state.current_step_id)
+        .cloned()
+}
+
+async fn worker_load_contract(
+    state: &WorkerState,
+    contract_id: &str,
+) -> std::result::Result<Option<AdmittedContract>, String> {
+    if let Some(contract) = state
+        .admitted_contracts
+        .lock()
+        .expect("contract registry lock poisoned")
+        .get(contract_id)
+        .cloned()
+    {
+        return Ok(Some(contract));
+    }
+    if let Some(kv) = &state.kv_store {
+        if let Some(contract) = kv_get_contract(kv, contract_id).await? {
+            state
+                .admitted_contracts
+                .lock()
+                .expect("contract registry lock poisoned")
+                .insert(contract_id.to_string(), contract.clone());
+            return Ok(Some(contract));
+        }
+    }
+    Ok(None)
+}
+
+async fn load_corridor_run_state(
+    state: &WorkerState,
+    run_id: &str,
+) -> std::result::Result<Option<CorridorContractRunState>, String> {
+    if let Some(run_state) = state
+        .contract_runs
+        .lock()
+        .expect("contract run lock poisoned")
+        .get(run_id)
+        .cloned()
+    {
+        return Ok(Some(run_state));
+    }
+    if let Some(kv) = &state.kv_store {
+        if let Some(run_state) = kv_get_corridor_contract_run_state(kv, run_id).await? {
+            state
+                .contract_runs
+                .lock()
+                .expect("contract run lock poisoned")
+                .insert(run_id.to_string(), run_state.clone());
+            return Ok(Some(run_state));
+        }
+    }
+    Ok(None)
+}
+
+async fn load_corridor_observations(
+    state: &WorkerState,
+    run_id: &str,
+) -> std::result::Result<Vec<ObservationRecord>, String> {
+    if let Some(records) = state
+        .contract_run_observations
+        .lock()
+        .expect("contract run observation lock poisoned")
+        .get(run_id)
+        .cloned()
+    {
+        return Ok(records);
+    }
+    if let Some(kv) = &state.kv_store {
+        let records = kv_get_corridor_contract_run_observations(kv, run_id).await?;
+        state
+            .contract_run_observations
+            .lock()
+            .expect("contract run observation lock poisoned")
+            .insert(run_id.to_string(), records.clone());
+        return Ok(records);
+    }
+    Ok(Vec::new())
+}
+
+fn append_contract_run_observation(
+    state: &WorkerState,
+    run_id: &str,
+    record: ObservationRecord,
+) -> usize {
+    let mut observations = state
+        .contract_run_observations
+        .lock()
+        .expect("contract run observation lock poisoned");
+    let records = observations.entry(run_id.to_string()).or_default();
+    records.push(record);
+    records.len()
+}
+
+fn contract_run_policy_summary(admission: Option<&OperationAdmission>) -> crate::policy::PolicySummary {
+    crate::policy::PolicySummary {
+        decision: admission
+            .map(|value| value.decision)
+            .unwrap_or(AdmissionDecision::Allow),
+        policy_version: admission
+            .map(|value| value.policy_version.clone())
+            .unwrap_or_else(|| "policy.default.v0".to_string()),
+        reason_code: admission
+            .map(|value| value.reason_code.clone())
+            .unwrap_or_else(|| "CONTRACT_RUN_COMPLETED".to_string()),
+    }
+}
+
+async fn persist_contract_run_snapshot(
+    state: &WorkerState,
+    run_state: &CorridorContractRunState,
+) -> std::result::Result<(), String> {
+    let observations = load_corridor_observations(state, &run_state.run_id).await?;
+    let evidence = build_evidence_response(
+        run_state.run_id.clone(),
+        match run_state.status {
+            CorridorContractRunStatus::Accepted
+            | CorridorContractRunStatus::InProgress
+            | CorridorContractRunStatus::WaitingReview => RunStatus::InProgress,
+            CorridorContractRunStatus::Completed => RunStatus::Completed,
+            CorridorContractRunStatus::Failed => RunStatus::Failed,
+            CorridorContractRunStatus::Blocked => RunStatus::Blocked,
+        },
+        run_state.trace_ref.clone(),
+        &observations,
+        contract_run_policy_summary(run_state.last_admission.as_ref()),
+    );
+    state
+        .run_store
+        .put_snapshot(RunSnapshot {
+            run_id: run_state.run_id.clone(),
+            evidence,
+            observations,
+        })
+        .await
+        .map_err(|err| err.message)
+}
+
+async fn persist_corridor_run_state(
+    state: &WorkerState,
+    run_state: &CorridorContractRunState,
+) -> std::result::Result<(), String> {
+    state
+        .contract_runs
+        .lock()
+        .expect("contract run lock poisoned")
+        .insert(run_state.run_id.clone(), run_state.clone());
+    if let Some(kv) = &state.kv_store {
+        kv_put_corridor_contract_run_state(kv, run_state).await?;
+        let observations = load_corridor_observations(state, &run_state.run_id).await?;
+        kv_put_corridor_contract_run_observations(kv, &run_state.run_id, &observations).await?;
+    }
+    persist_contract_run_snapshot(state, run_state).await
+}
+
+fn contract_run_scope_admission(
+    run_id: &str,
+    operation_id: &str,
+    auth_context: &crate::request::AuthContext,
+    verifier: &dyn AuthVerifier,
+) -> PolicyAdmission {
+    PolicyAdmission::from_auth_context(
+        format!("adm_{run_id}_{operation_id}"),
+        operation_id.to_string(),
+        "policy.default.v0".to_string(),
+        "contracts.run",
+        Some(auth_context.clone()),
+        verifier,
+    )
+}
+
+fn connector_metadata_for_current_step(
+    admitted_contract: &AdmittedContract,
+    step_id: &str,
+) -> std::result::Result<Option<ContractStepConnectorMetadata>, String> {
+    let step = flow_step_by_id(&admitted_contract.flow, step_id)
+        .ok_or_else(|| format!("contract step was not found: {step_id}"))?;
+    if step.step_type.as_deref() != Some("connector_action") {
+        return Ok(None);
+    }
+    let connector = step
+        .connector
+        .as_ref()
+        .ok_or_else(|| format!("connector_action step {step_id} is missing connector metadata"))?;
+    let connector_id = connector
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("connector_action step {step_id} is missing connector name"))?
+        .to_string();
+    let side_effect_intent = connector
+        .get("side_effect_intent")
+        .and_then(|value| value.as_str())
+        .and_then(parse_side_effect_intent_str);
+
+    Ok(Some(ContractStepConnectorMetadata {
+        connector_id,
+        endpoint_ref: connector
+            .get("endpoint_ref")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        method: connector
+            .get("method")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_ascii_uppercase()),
+        side_effect_intent,
+    }))
+}
+
+fn build_current_operation_admission(
+    run_state: &CorridorContractRunState,
+    admitted_contract: Option<&AdmittedContract>,
+    verifier: &dyn AuthVerifier,
+) -> OperationAdmission {
+    if admitted_contract.is_none() {
+        return OperationAdmission {
+            admission_id: format!("adm_{}", run_state.run_id),
+            decision: AdmissionDecision::Deny,
+            reason_code: "CONTRACT_NOT_FOUND".to_string(),
+            policy_version: "policy.default.v0".to_string(),
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state
+                .next_allowed_operation_id
+                .clone()
+                .unwrap_or_else(|| "op_terminal".to_string()),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({}),
+            expires_at: None,
+        };
+    }
+
+    let admitted_contract = admitted_contract.expect("checked above");
+    let scope_admission = contract_run_scope_admission(
+        &run_state.run_id,
+        run_state
+            .next_allowed_operation_id
+            .as_deref()
+            .unwrap_or("op_terminal"),
+        &run_state.auth_context,
+        verifier,
+    );
+
+    if matches!(
+        run_state.status,
+        CorridorContractRunStatus::Blocked | CorridorContractRunStatus::Completed | CorridorContractRunStatus::Failed
+    ) {
+        return OperationAdmission {
+            admission_id: format!("adm_{}", run_state.run_id),
+            decision: AdmissionDecision::Deny,
+            reason_code: "RUN_ALREADY_TERMINAL".to_string(),
+            policy_version: "policy.default.v0".to_string(),
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state
+                .next_allowed_operation_id
+                .clone()
+                .unwrap_or_else(|| "op_terminal".to_string()),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({}),
+            expires_at: None,
+        };
+    }
+
+    let step = current_contract_step(run_state).expect("current step must exist");
+    if step.step_type == ContractStepType::HumanGate {
+        match run_state.gate.as_ref() {
+            Some(gate) if gate.status == HumanGateStatus::WaitingReview => {
+                return OperationAdmission {
+                    admission_id: format!("adm_review_{}", run_state.run_id),
+                    decision: AdmissionDecision::RequireReview,
+                    reason_code: "HUMAN_GATE_REQUIRED".to_string(),
+                    policy_version: "policy.default.v0".to_string(),
+                    contract_id: run_state.contract_id.clone(),
+                    run_id: run_state.run_id.clone(),
+                    step_id: run_state.current_step_id.clone(),
+                    operation_id: step.operation_id.clone().unwrap_or_default(),
+                    allowed_connector_id: None,
+                    allowed_endpoint_ref: None,
+                    allowed_method: None,
+                    constraints: json!({}),
+                    expires_at: None,
+                };
+            }
+            Some(gate)
+                if gate.status == HumanGateStatus::Resolved
+                    && gate.decision == Some(HumanGateDecision::Approve) => {}
+            Some(gate)
+                if gate.status == HumanGateStatus::Resolved
+                    && gate.decision == Some(HumanGateDecision::Reject) =>
+            {
+                return OperationAdmission {
+                    admission_id: format!("adm_review_{}", run_state.run_id),
+                    decision: AdmissionDecision::Deny,
+                    reason_code: "HUMAN_GATE_REJECTED".to_string(),
+                    policy_version: "policy.default.v0".to_string(),
+                    contract_id: run_state.contract_id.clone(),
+                    run_id: run_state.run_id.clone(),
+                    step_id: run_state.current_step_id.clone(),
+                    operation_id: step.operation_id.clone().unwrap_or_default(),
+                    allowed_connector_id: None,
+                    allowed_endpoint_ref: None,
+                    allowed_method: None,
+                    constraints: json!({}),
+                    expires_at: None,
+                };
+            }
+            _ => {
+                return OperationAdmission {
+                    admission_id: format!("adm_review_{}", run_state.run_id),
+                    decision: AdmissionDecision::Deny,
+                    reason_code: "HUMAN_GATE_STATE_INVALID".to_string(),
+                    policy_version: "policy.default.v0".to_string(),
+                    contract_id: run_state.contract_id.clone(),
+                    run_id: run_state.run_id.clone(),
+                    step_id: run_state.current_step_id.clone(),
+                    operation_id: step.operation_id.clone().unwrap_or_default(),
+                    allowed_connector_id: None,
+                    allowed_endpoint_ref: None,
+                    allowed_method: None,
+                    constraints: json!({}),
+                    expires_at: None,
+                };
+            }
+        }
+    }
+
+    if scope_admission.decision != AdmissionDecision::Allow {
+        return OperationAdmission {
+            admission_id: scope_admission.admission_id,
+            decision: scope_admission.decision,
+            reason_code: "OPERATION_NOT_ALLOWED".to_string(),
+            policy_version: scope_admission.policy_version,
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: step.operation_id.clone().unwrap_or_default(),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({"auth_context": scope_admission.auth_context}),
+            expires_at: None,
+        };
+    }
+
+    let connector_metadata =
+        connector_metadata_for_current_step(admitted_contract, &run_state.current_step_id).ok().flatten();
+    let (connector_id, endpoint_ref, method, reason_code, constraints) =
+        if let Some(metadata) = connector_metadata {
+            (
+                Some(metadata.connector_id),
+                metadata.endpoint_ref,
+                metadata.method,
+                "NEXT_OPERATION_ALLOWED".to_string(),
+                json!({
+                    "side_effect_intent": metadata
+                        .side_effect_intent
+                        .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null)
+                }),
+            )
+        } else if step.step_type == ContractStepType::Terminal {
+            return OperationAdmission {
+                admission_id: format!("adm_{}", run_state.run_id),
+                decision: AdmissionDecision::Deny,
+                reason_code: "RUN_ALREADY_TERMINAL".to_string(),
+                policy_version: "policy.default.v0".to_string(),
+                contract_id: run_state.contract_id.clone(),
+                run_id: run_state.run_id.clone(),
+                step_id: run_state.current_step_id.clone(),
+                operation_id: step.operation_id.clone().unwrap_or_default(),
+                allowed_connector_id: None,
+                allowed_endpoint_ref: None,
+                allowed_method: None,
+                constraints: json!({}),
+                expires_at: None,
+            };
+        } else {
+            (None, None, None, "HUMAN_GATE_APPROVED".to_string(), json!({}))
+        };
+
+    OperationAdmission {
+        admission_id: format!("adm_{}", run_state.run_id),
+        decision: AdmissionDecision::Allow,
+        reason_code,
+        policy_version: "policy.default.v0".to_string(),
+        contract_id: run_state.contract_id.clone(),
+        run_id: run_state.run_id.clone(),
+        step_id: run_state.current_step_id.clone(),
+        operation_id: step.operation_id.clone().unwrap_or_default(),
+        allowed_connector_id: connector_id,
+        allowed_endpoint_ref: endpoint_ref,
+        allowed_method: method,
+        constraints,
+        expires_at: Some("2026-05-23T08:35:00Z".to_string()),
+    }
+}
+
+fn contains_forbidden_connector_override(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    ["connector_id", "endpoint_ref", "method", "target_url", "side_effect_intent"]
+        .iter()
+        .any(|key| object.contains_key(*key))
+}
+
+fn set_step_status(run_state: &mut CorridorContractRunState, step_id: &str, status: ContractStepStatus) {
+    if let Some(step) = run_state.steps.iter_mut().find(|step| step.step_id == step_id) {
+        step.status = status;
+    }
+}
+
+fn step_by_id<'a>(
+    run_state: &'a CorridorContractRunState,
+    step_id: &str,
+) -> Option<&'a crate::contract_step::ContractStep> {
+    run_state.steps.iter().find(|step| step.step_id == step_id)
+}
+
+fn transition_trace_json(
+    from_step_id: &str,
+    outcome: ContractStepOutcome,
+    transition: &ContractTransition,
+    reason_code: &str,
+) -> Value {
+    match transition {
+        ContractTransition::NextStep { step_id } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "next_step",
+                "target_step_id": step_id,
+                "terminal_status": Value::Null
+            },
+            "reason_code": reason_code
+        }),
+        ContractTransition::Terminal { status, .. } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "terminal",
+                "target_step_id": Value::Null,
+                "terminal_status": status.as_str()
+            },
+            "reason_code": reason_code
+        }),
+        ContractTransition::Blocked { .. } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "blocked",
+                "target_step_id": Value::Null,
+                "terminal_status": "blocked"
+            },
+            "reason_code": reason_code
+        }),
+    }
+}
+
+fn apply_transition_to_run_state(
+    run_state: &mut CorridorContractRunState,
+    transition: &ContractTransition,
+) -> std::result::Result<(), String> {
+    match transition {
+        ContractTransition::NextStep { step_id } => {
+            let next_step = step_by_id(run_state, step_id)
+                .cloned()
+                .ok_or_else(|| format!("transition target step was not found: {step_id}"))?;
+            run_state.current_step_id = step_id.clone();
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+            match next_step.step_type {
+                ContractStepType::HumanGate => {
+                    run_state.status = CorridorContractRunStatus::WaitingReview;
+                    run_state.next_allowed_operation_id = next_step.operation_id.clone();
+                    set_step_status(run_state, step_id, ContractStepStatus::WaitingReview);
+                    let gate = gate_for_step(&run_state.run_id, &next_step);
+                    run_state.current_gate_id = Some(gate.gate_id.clone());
+                    run_state.gate = Some(gate);
+                }
+                ContractStepType::ConnectorAction | ContractStepType::DeterministicAction => {
+                    run_state.status = CorridorContractRunStatus::InProgress;
+                    run_state.next_allowed_operation_id = next_step.operation_id.clone();
+                    set_step_status(run_state, step_id, ContractStepStatus::Ready);
+                }
+                ContractStepType::Terminal => {
+                    run_state.status = CorridorContractRunStatus::Completed;
+                    run_state.next_allowed_operation_id = None;
+                    set_step_status(run_state, step_id, ContractStepStatus::Completed);
+                }
+            }
+        }
+        ContractTransition::Terminal { status, .. } => {
+            run_state.status = *status;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+        }
+        ContractTransition::Blocked { .. } => {
+            run_state.status = CorridorContractRunStatus::Blocked;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+        }
+    }
+    Ok(())
+}
+
+fn serialize_contract_run_status(state: &CorridorContractRunState) -> Value {
+    serde_json::to_value(crate::contract_run::ContractRunStatusResponse {
+        run_id: state.run_id.clone(),
+        contract_id: state.contract_id.clone(),
+        status: state.status,
+        current_step_id: state.current_step_id.clone(),
+        next_allowed_operation_id: state.next_allowed_operation_id.clone(),
+        trace_ref: state.trace_ref.clone(),
+        observation_count: state.observation_count,
+        gate: state.gate.clone(),
+    })
+    .unwrap_or_else(|_| json!({}))
+}
+
+async fn handle_contract_run_start(
+    mut req: Request,
+    state: Arc<WorkerState>,
+    contract_id: String,
+) -> Result<Response> {
+    let body = req.bytes().await?;
+    let payload = match parse_json_with_limit(&body) {
+        Ok(v) => v,
+        Err(message) if message.starts_with("body too large") => {
+            return contract_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+        }
+        Err(message) => {
+            return contract_error(400, "validation_failed", "request parsing failed", vec![message]);
+        }
+    };
+
+    let request: CorridorContractRunRequest = match serde_json::from_value(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            return contract_error(
+                400,
+                "validation_failed",
+                "contract run request parsing failed",
+                vec![format!("payload: {err}")],
+            );
+        }
+    };
+    if request.request_id.trim().is_empty()
+        || request.actor.actor_id.trim().is_empty()
+        || request.source.client_id.trim().is_empty()
+        || request.auth_context.mode.trim().is_empty()
+    {
+        return contract_error(
+            400,
+            "validation_failed",
+            "contract run request validation failed",
+            vec!["request_id, actor, source, and auth_context.mode are required".to_string()],
+        );
+    }
+
+    let admitted_contract = match worker_load_contract(&state, &contract_id).await {
+        Ok(Some(contract)) => contract,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "contract_not_found",
+                "contract was not found",
+                vec![format!("contract_id: {contract_id}")],
+            )
+        }
+        Err(err) => {
+            return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]);
+        }
+    };
+
+    let scope_admission = contract_run_scope_admission(
+        &format!("contract_run_{}", request.request_id),
+        "op_start_contract",
+        &request.auth_context,
+        state.auth_verifier.as_ref(),
+    );
+    if scope_admission.decision != AdmissionDecision::Allow {
+        return contract_error(
+            403,
+            "authorization_failed",
+            "policy authorization failed",
+            vec![format!("reason_code: {}", scope_admission.reason_code)],
+        );
+    }
+
+    if let Err(err) = validate_contract_run_flow(&admitted_contract) {
+        return contract_error(400, &err.code, "contract flow is invalid", vec![err.message]);
+    }
+    let steps = match contract_steps_from_flow(&admitted_contract) {
+        Ok(steps) => steps,
+        Err(err) => return contract_error(400, &err.code, "contract flow is invalid", vec![err.message]),
+    };
+    let entry_step = match steps.iter().find(|step| step.step_id == admitted_contract.flow.entry) {
+        Some(step) => step.clone(),
+        None => {
+            return contract_error(
+                400,
+                "contract_flow_invalid",
+                "contract flow entry step was not found",
+                vec![format!("entry: {}", admitted_contract.flow.entry)],
+            );
+        }
+    };
+
+    let run_id = format!("contract_run_{}", request.request_id);
+    let trace_ref = request
+        .correlation
+        .get("trace_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("trace_contract_001")
+        .to_string();
+
+    let mut run_state = CorridorContractRunState {
+        run_id: run_id.clone(),
+        contract_id: contract_id.clone(),
+        status: CorridorContractRunStatus::Accepted,
+        auth_context: request.auth_context.clone(),
+        current_step_id: admitted_contract.flow.entry.clone(),
+        next_allowed_operation_id: entry_step.operation_id.clone(),
+        completed_step_ids: Vec::new(),
+        current_gate_id: None,
+        trace_ref: trace_ref.clone(),
+        observation_count: 0,
+        created_at: "2026-05-23T08:30:00Z".to_string(),
+        updated_at: "2026-05-23T08:30:00Z".to_string(),
+        steps,
+        gate: None,
+        last_admission: None,
+    };
+    let admission =
+        build_current_operation_admission(&run_state, Some(&admitted_contract), state.auth_verifier.as_ref());
+    run_state.last_admission = Some(admission);
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_id,
+        ObservationRecord {
+            run_id: run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            event_type: "contract_run.started".to_string(),
+            timestamp: "2026-05-23T08:30:00Z".to_string(),
+            subject: json!({"contract_id": contract_id, "actor_id": request.actor.actor_id}),
+            result: json!({"status": "accepted"}),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{run_id}_001"),
+        },
+    );
+
+    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
+        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
+    }
+
+    Response::from_json(&json!({
+        "run_id": run_id,
+        "contract_id": contract_id,
+        "status": run_state.status.as_str(),
+        "current_step_id": run_state.current_step_id,
+        "next_allowed_operation_id": run_state.next_allowed_operation_id,
+        "trace_ref": trace_ref,
+        "observation_count": run_state.observation_count,
+        "gate": Value::Null
+    }))
+    .map(|r| r.with_status(202))
+}
+
+async fn handle_contract_run_status(state: Arc<WorkerState>, run_id: String) -> Result<Response> {
+    match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => Response::from_json(&serialize_contract_run_status(&run_state)),
+        Ok(None) => contract_error(
+            404,
+            "run_not_found",
+            "contract run was not found",
+            vec![format!("run_id: {run_id}")],
+        ),
+        Err(err) => contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    }
+}
+
+async fn handle_contract_run_next(state: Arc<WorkerState>, run_id: String) -> Result<Response> {
+    let mut run_state = match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => run_state,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "run_not_found",
+                "contract run was not found",
+                vec![format!("run_id: {run_id}")],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    };
+    let admitted_contract = match worker_load_contract(&state, &run_state.contract_id).await {
+        Ok(contract) => contract,
+        Err(err) => return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]),
+    };
+    let admission =
+        build_current_operation_admission(&run_state, admitted_contract.as_ref(), state.auth_verifier.as_ref());
+    run_state.last_admission = Some(admission.clone());
+    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
+        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
+    }
+    let step = current_contract_step(&run_state).expect("current step must exist");
+    Response::from_json(&json!({
+        "run_id": run_state.run_id,
+        "contract_id": run_state.contract_id,
+        "step": step,
+        "operation_admission": admission
+    }))
+}
+
+async fn handle_contract_run_step_execute(
+    mut req: Request,
+    state: Arc<WorkerState>,
+    run_id: String,
+    step_id: String,
+) -> Result<Response> {
+    let body = req.bytes().await?;
+    let payload = match parse_json_with_limit(&body) {
+        Ok(v) => v,
+        Err(message) if message.starts_with("body too large") => {
+            return contract_error(413, "request_too_large", "request body exceeds limit", vec![message]);
+        }
+        Err(message) => return contract_error(400, "validation_failed", "request parsing failed", vec![message]),
+    };
+    let operation_id = payload
+        .get("operation_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if operation_id.is_empty() {
+        return contract_error(
+            400,
+            "validation_failed",
+            "operation_id is required",
+            vec!["operation_id".to_string()],
+        );
+    }
+
+    let mut run_state = match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => run_state,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "run_not_found",
+                "contract run was not found",
+                vec![format!("run_id: {run_id}")],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    };
+
+    if run_state.current_step_id != step_id {
+        return contract_error(
+            409,
+            "step_state_conflict",
+            "step_id is not the current step",
+            vec![format!("current_step_id: {}", run_state.current_step_id)],
+        );
+    }
+    if run_state.status == CorridorContractRunStatus::WaitingReview {
+        return contract_error(
+            403,
+            "human_gate_required",
+            "run is waiting for human gate resolution",
+            vec!["reason_code: HUMAN_GATE_REQUIRED".to_string()],
+        );
+    }
+    if matches!(
+        run_state.status,
+        CorridorContractRunStatus::Completed | CorridorContractRunStatus::Failed | CorridorContractRunStatus::Blocked
+    ) {
+        return contract_error(
+            403,
+            "run_terminal",
+            "run is already terminal",
+            vec!["reason_code: RUN_ALREADY_TERMINAL".to_string()],
+        );
+    }
+    if run_state.next_allowed_operation_id.as_deref() != Some(operation_id.as_str()) {
+        return contract_error(
+            403,
+            "operation_not_allowed",
+            "operation_id is not allowed for current step",
+            vec![format!("operation_id: {operation_id}")],
+        );
+    }
+    if payload.get("connector_id").is_some()
+        || payload.get("endpoint_ref").is_some()
+        || payload.get("method").is_some()
+        || payload.get("target_url").is_some()
+        || payload.get("side_effect_intent").is_some()
+    {
+        return contract_error(
+            403,
+            "connector_override_forbidden",
+            "client-provided connector override is forbidden",
+            vec!["CONNECTOR_OVERRIDE_FORBIDDEN".to_string()],
+        );
+    }
+    if contains_forbidden_connector_override(payload.get("input_payload").unwrap_or(&Value::Null)) {
+        return contract_error(
+            403,
+            "connector_override_forbidden",
+            "nested connector override is forbidden",
+            vec!["CONNECTOR_OVERRIDE_FORBIDDEN".to_string()],
+        );
+    }
+
+    let step = current_contract_step(&run_state).expect("current step must exist");
+    let admitted_contract = match worker_load_contract(&state, &run_state.contract_id).await {
+        Ok(Some(contract)) => contract,
+        Ok(None) => {
+            return contract_error(
+                403,
+                "contract_not_found",
+                "admitted contract for run was not found",
+                vec![format!("contract_id: {}", run_state.contract_id)],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]),
+    };
+    let admission =
+        build_current_operation_admission(&run_state, Some(&admitted_contract), state.auth_verifier.as_ref());
+    if admission.decision != AdmissionDecision::Allow {
+        return contract_error(
+            403,
+            "operation_not_allowed",
+            "operation admission denied",
+            vec![format!("reason_code: {}", admission.reason_code)],
+        );
+    }
+
+    run_state.last_admission = Some(admission.clone());
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: step.step_id.clone(),
+            event_type: "contract_run.operation_admitted".to_string(),
+            timestamp: "2026-05-23T08:32:30Z".to_string(),
+            subject: json!({"operation_id": operation_id}),
+            result: json!({
+                "operation_id": operation_id,
+                "decision": "allow",
+                "reason_code": admission.reason_code,
+                "allowed_connector_id": admission.allowed_connector_id,
+                "allowed_endpoint_ref": admission.allowed_endpoint_ref,
+                "allowed_method": admission.allowed_method
+            }),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+
+    let connector_summary = if step.step_type == ContractStepType::ConnectorAction {
+        let side_effect_intent = admission
+            .constraints
+            .get("side_effect_intent")
+            .and_then(|value| value.as_str())
+            .and_then(parse_side_effect_intent_str)
+            .unwrap_or(SideEffectIntent::ExternalNetwork);
+        let connector_id = match admission.allowed_connector_id.clone() {
+            Some(value) => value,
+            None => {
+                return contract_error(
+                    403,
+                    "connector_not_allowed",
+                    "connector metadata missing in admission",
+                    vec!["CONNECTOR_NOT_ALLOWED".to_string()],
+                )
+            }
+        };
+        let method = admission
+            .allowed_method
+            .clone()
+            .unwrap_or_else(|| "POST".to_string());
+        let endpoint_ref = admission.allowed_endpoint_ref.clone();
+        let auth_context = serde_json::to_value(&run_state.auth_context).unwrap_or_else(|_| json!({}));
+        let connector_request = ConnectorExecutionRequest {
+            connector_id: connector_id.clone(),
+            call_id: format!("call_{}_{}", run_state.run_id, operation_id),
+            side_effect_intent,
+            request: redact_json(&json!({
+                "endpoint_ref": endpoint_ref,
+                "method": method,
+                "body": payload.get("input_payload").cloned().unwrap_or_else(|| json!({})),
+                "run_id": run_state.run_id,
+                "correlation_id": payload
+                    .get("correlation")
+                    .and_then(|value| value.get("correlation_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "trace_ref": run_state.trace_ref,
+                "input": payload.get("input_payload").cloned().unwrap_or_else(|| json!({}))
+            })),
+            auth_context: redact_json(&auth_context),
+            credential_refs: vec![],
+            policy_result: contract_run_policy_summary(Some(&admission)),
+            started_at: "2026-05-23T08:33:00Z".to_string(),
+        };
+        let connector_result = match state.connector_executor.execute(connector_request).await {
+            Ok(value) => value,
+            Err(ConnectorExecutionError { code, message }) => {
+                let status = if code.contains("denied") { 403 } else { 502 };
+                return contract_error(
+                    status,
+                    "connector_execution_failed",
+                    &message,
+                    vec![format!("connector_code: {code}")],
+                );
+            }
+        };
+        json!({
+            "connector_id": connector_id,
+            "endpoint_ref": endpoint_ref,
+            "method": method,
+            "side_effect_intent": side_effect_intent,
+            "connector_status": connector_result.call.status,
+            "provider": connector_result.call.response.get("provider").cloned().unwrap_or_else(|| json!("unknown")),
+            "connector_mode": connector_result.call.response.get("connector_mode").cloned().unwrap_or_else(|| json!("unknown")),
+            "response_preview": connector_result.call.response.get("response_preview").cloned().unwrap_or_else(|| json!({})),
+            "attempts": connector_result.call.response.get("attempts").cloned().unwrap_or_else(|| json!(1)),
+            "timeout_ms": connector_result.call.response.get("timeout_ms").cloned().unwrap_or_else(|| json!(0))
+        })
+    } else {
+        json!({
+            "provider": "human_gate_resolution",
+            "decision_basis": "approved_gate"
+        })
+    };
+
+    for item in &mut run_state.steps {
+        if item.step_id == run_state.current_step_id {
+            item.status = ContractStepStatus::Completed;
+        }
+    }
+    let executed_step_id = run_state.current_step_id.clone();
+    run_state.completed_step_ids.push(executed_step_id.clone());
+    let outcome = if step.step_type == ContractStepType::HumanGate {
+        ContractStepOutcome::Approve
+    } else {
+        ContractStepOutcome::Default
+    };
+    let transition = match resolve_flow_transition(&admitted_contract, &executed_step_id, outcome) {
+        Ok(transition) => transition,
+        Err(err) => {
+            run_state.status = CorridorContractRunStatus::Failed;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+            run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
+            run_state.observation_count = append_contract_run_observation(
+                &state,
+                &run_state.run_id,
+                ObservationRecord {
+                    run_id: run_state.run_id.clone(),
+                    step_id: executed_step_id.clone(),
+                    event_type: "contract_run.transition_failed".to_string(),
+                    timestamp: "2026-05-23T08:33:00Z".to_string(),
+                    subject: json!({}),
+                    result: json!({
+                        "from_step_id": executed_step_id,
+                        "outcome": outcome.as_flow_key(),
+                        "reason_code": "TRANSITION_NOT_FOUND",
+                        "error_code": err.code,
+                        "message": err.message
+                    }),
+                    metadata: json!({}),
+                    evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+                },
+            );
+            let _ = persist_corridor_run_state(&state, &run_state).await;
+            return contract_error(
+                409,
+                "transition_not_found",
+                "contract transition could not be resolved",
+                vec![err.message],
+            );
+        }
+    };
+    let transition_reason_code = match &transition {
+        ContractTransition::NextStep { .. } => "TRANSITION_APPLIED".to_string(),
+        ContractTransition::Terminal { reason_code, .. } => reason_code.clone(),
+        ContractTransition::Blocked { reason_code } => reason_code.clone(),
+    };
+    if let Err(err) = apply_transition_to_run_state(&mut run_state, &transition) {
+        return contract_error(502, "contract_step_not_found", "transition target step was not found", vec![err]);
+    }
+    run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
+    run_state.last_admission = Some(OperationAdmission {
+        admission_id: format!("adm_exec_{}", run_state.run_id),
+        decision: AdmissionDecision::Allow,
+        reason_code: "OPERATION_ALLOWED".to_string(),
+        policy_version: "policy.default.v0".to_string(),
+        contract_id: run_state.contract_id.clone(),
+        run_id: run_state.run_id.clone(),
+        step_id: step.step_id.clone(),
+        operation_id: operation_id.clone(),
+        allowed_connector_id: admission.allowed_connector_id.clone(),
+        allowed_endpoint_ref: admission.allowed_endpoint_ref.clone(),
+        allowed_method: admission.allowed_method.clone(),
+        constraints: admission.constraints.clone(),
+        expires_at: None,
+    });
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: executed_step_id.clone(),
+            event_type: "contract_run.step_executed".to_string(),
+            timestamp: "2026-05-23T08:33:00Z".to_string(),
+            subject: json!({"operation_id": operation_id}),
+            result: json!({
+                "status": "step_completed",
+                "admission": {
+                    "decision": "allow",
+                    "reason_code": "OPERATION_ALLOWED",
+                    "allowed_connector_id": admission.allowed_connector_id,
+                    "allowed_endpoint_ref": admission.allowed_endpoint_ref,
+                    "allowed_method": admission.allowed_method
+                },
+                "connector_summary": connector_summary
+            }),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: executed_step_id.clone(),
+            event_type: "contract_run.transition_applied".to_string(),
+            timestamp: "2026-05-23T08:33:00Z".to_string(),
+            subject: json!({"operation_id": operation_id}),
+            result: transition_trace_json(&executed_step_id, outcome, &transition, &transition_reason_code)
+                .as_object()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or_else(|| json!({})),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+
+    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
+        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
+    }
+
+    Response::from_json(&json!({
+        "run_id": run_state.run_id,
+        "contract_id": run_state.contract_id,
+        "step_id": executed_step_id,
+        "operation_id": operation_id,
+        "status": "step_completed",
+        "next_step_id": run_state.current_step_id,
+        "current_step_id": run_state.current_step_id,
+        "next_allowed_operation_id": run_state.next_allowed_operation_id,
+        "trace_ref": run_state.trace_ref,
+        "observation_count": run_state.observation_count,
+        "policy_summary": {
+            "decision": "allow",
+            "policy_version": "policy.default.v0",
+            "reason_code": "OPERATION_ALLOWED"
+        }
+    }))
+    .map(|r| r.with_status(202))
+}
+
+async fn handle_contract_run_current_gate(state: Arc<WorkerState>, run_id: String) -> Result<Response> {
+    match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => match &run_state.gate {
+            Some(gate) if gate.status == HumanGateStatus::WaitingReview => Response::from_json(&json!({
+                "run_id": run_id,
+                "gate_id": gate.gate_id,
+                "step_id": gate.step_id,
+                "status": "waiting_review",
+                "reason_code": gate.reason_code,
+                "prompt": gate.prompt,
+                "requested_operation_id": gate.requested_operation_id,
+                "created_at": gate.created_at
+            })),
+            _ => Response::from_json(&json!({"run_id": run_id, "gate": Value::Null})),
+        },
+        Ok(None) => contract_error(
+            404,
+            "run_not_found",
+            "contract run was not found",
+            vec![format!("run_id: {run_id}")],
+        ),
+        Err(err) => contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    }
+}
+
+async fn handle_contract_run_gate_resolve(
+    mut req: Request,
+    state: Arc<WorkerState>,
+    run_id: String,
+    gate_id: String,
+) -> Result<Response> {
+    let body = req.bytes().await?;
+    let payload = match parse_json_with_limit(&body) {
+        Ok(v) => v,
+        Err(message) => return contract_error(400, "validation_failed", "request parsing failed", vec![message]),
+    };
+    let request: HumanGateResolutionRequest = match serde_json::from_value(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            return contract_error(
+                400,
+                "validation_failed",
+                "gate resolution parsing failed",
+                vec![format!("payload: {err}")],
+            );
+        }
+    };
+
+    let mut run_state = match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => run_state,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "run_not_found",
+                "contract run was not found",
+                vec![format!("run_id: {run_id}")],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    };
+    let gate = match run_state.gate.clone() {
+        Some(gate) if gate.status == HumanGateStatus::WaitingReview && gate.gate_id == gate_id => gate,
+        _ => {
+            return contract_error(
+                409,
+                "gate_state_conflict",
+                "only current active gate can be resolved",
+                vec![format!("gate_id: {gate_id}")],
+            );
+        }
+    };
+    let admitted_contract = match worker_load_contract(&state, &run_state.contract_id).await {
+        Ok(Some(contract)) => contract,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "contract_not_found",
+                "admitted contract for run was not found",
+                vec![format!("contract_id: {}", run_state.contract_id)],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract registry read failed", vec![err]),
+    };
+    let gate_step_id = gate.step_id.clone();
+    let resolved_gate = HumanGate {
+        status: HumanGateStatus::Resolved,
+        resolved_at: Some(
+            request
+                .timestamps
+                .get("decided_at")
+                .and_then(|value| value.as_str())
+                .unwrap_or("2026-05-23T08:32:00Z")
+                .to_string(),
+        ),
+        decision: Some(request.decision),
+        decided_by: Some(request.actor.actor_id.clone()),
+        ..gate
+    };
+
+    if request.decision == HumanGateDecision::Approve {
+        run_state.status = CorridorContractRunStatus::InProgress;
+        run_state.next_allowed_operation_id =
+            step_by_id(&run_state, &run_state.current_step_id).and_then(|step| step.operation_id.clone());
+        if let Some(step) = run_state
+            .steps
+            .iter_mut()
+            .find(|step| step.step_id == run_state.current_step_id)
+        {
+            step.status = ContractStepStatus::Ready;
+        }
+        run_state.last_admission = Some(OperationAdmission {
+            admission_id: format!("adm_gate_{}", run_state.run_id),
+            decision: AdmissionDecision::Allow,
+            reason_code: "HUMAN_GATE_APPROVED".to_string(),
+            policy_version: "policy.default.v0".to_string(),
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state.next_allowed_operation_id.clone().unwrap_or_default(),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({}),
+            expires_at: None,
+        });
+    } else {
+        let transition = match resolve_flow_transition(
+            &admitted_contract,
+            &run_state.current_step_id,
+            ContractStepOutcome::Reject,
+        ) {
+            Ok(transition) => transition,
+            Err(err) => {
+                run_state.status = CorridorContractRunStatus::Failed;
+                run_state.next_allowed_operation_id = None;
+                run_state.current_gate_id = None;
+                run_state.gate = None;
+                run_state.updated_at = "2026-05-23T08:32:00Z".to_string();
+                run_state.observation_count = append_contract_run_observation(
+                    &state,
+                    &run_state.run_id,
+                    ObservationRecord {
+                        run_id: run_state.run_id.clone(),
+                        step_id: gate_step_id.clone(),
+                        event_type: "contract_run.transition_failed".to_string(),
+                        timestamp: "2026-05-23T08:32:00Z".to_string(),
+                        subject: json!({}),
+                        result: json!({
+                            "from_step_id": gate_step_id,
+                            "outcome": ContractStepOutcome::Reject.as_flow_key(),
+                            "reason_code": "TRANSITION_NOT_FOUND",
+                            "error_code": err.code,
+                            "message": err.message
+                        }),
+                        metadata: json!({}),
+                        evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+                    },
+                );
+                let _ = persist_corridor_run_state(&state, &run_state).await;
+                return contract_error(
+                    409,
+                    "transition_not_found",
+                    "contract transition could not be resolved",
+                    vec![err.message],
+                );
+            }
+        };
+        let current_step_id = run_state.current_step_id.clone();
+        set_step_status(&mut run_state, &current_step_id, ContractStepStatus::Blocked);
+        let _ = apply_transition_to_run_state(&mut run_state, &transition);
+        run_state.last_admission = Some(OperationAdmission {
+            admission_id: format!("adm_gate_{}", run_state.run_id),
+            decision: AdmissionDecision::Deny,
+            reason_code: "HUMAN_GATE_REJECTED".to_string(),
+            policy_version: "policy.default.v0".to_string(),
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: gate_step_id.clone(),
+            operation_id: resolved_gate.requested_operation_id.clone(),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({}),
+            expires_at: None,
+        });
+        run_state.observation_count = append_contract_run_observation(
+            &state,
+            &run_state.run_id,
+            ObservationRecord {
+                run_id: run_state.run_id.clone(),
+                step_id: gate_step_id.clone(),
+                event_type: "contract_run.transition_applied".to_string(),
+                timestamp: "2026-05-23T08:32:00Z".to_string(),
+                subject: json!({"gate_id": gate_id}),
+                result: transition_trace_json(
+                    &gate_step_id,
+                    ContractStepOutcome::Reject,
+                    &transition,
+                    "TRANSITION_APPLIED",
+                )
+                .as_object()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or_else(|| json!({})),
+                metadata: json!({}),
+                evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+            },
+        );
+    }
+
+    run_state.gate = Some(resolved_gate.clone());
+    run_state.updated_at = resolved_gate
+        .resolved_at
+        .clone()
+        .unwrap_or_else(|| "2026-05-23T08:32:00Z".to_string());
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: gate_step_id.clone(),
+            event_type: "contract_run.gate_resolved".to_string(),
+            timestamp: run_state.updated_at.clone(),
+            subject: json!({"gate_id": gate_id, "actor_id": request.actor.actor_id}),
+            result: json!({
+                "step_id": gate_step_id,
+                "requested_operation_id": resolved_gate.requested_operation_id,
+                "decision": if request.decision == HumanGateDecision::Approve { "approve" } else { "reject" },
+                "reason_code": if request.decision == HumanGateDecision::Approve {
+                    "HUMAN_GATE_APPROVED"
+                } else {
+                    "HUMAN_GATE_REJECTED"
+                }
+            }),
+            metadata: json!({"reason": request.reason}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+
+    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
+        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
+    }
+
+    Response::from_json(&json!({
+        "run_id": run_state.run_id,
+        "gate_id": gate_id,
+        "status": "resolved",
+        "decision": if request.decision == HumanGateDecision::Approve { "approve" } else { "reject" },
+        "next_step_id": run_state.current_step_id,
+        "current_step_id": run_state.current_step_id,
+        "next_allowed_operation_id": run_state.next_allowed_operation_id,
+        "trace_ref": run_state.trace_ref,
+        "observation_count": run_state.observation_count
+    }))
+}
+
+async fn handle_contract_run_evidence(state: Arc<WorkerState>, run_id: String) -> Result<Response> {
+    let run_state = match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(run_state)) => run_state,
+        Ok(None) => {
+            return contract_error(
+                404,
+                "run_not_found",
+                "contract run was not found",
+                vec![format!("run_id: {run_id}")],
+            )
+        }
+        Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    };
+    let observations = match load_corridor_observations(&state, &run_id).await {
+        Ok(records) => records,
+        Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
+    };
+    let steps = observations
+        .iter()
+        .filter(|record| record.event_type == "contract_run.step_executed")
+        .map(|record| {
+            json!({
+                "step_id": record.step_id,
+                "operation_id": record.subject.get("operation_id").cloned().unwrap_or(Value::Null),
+                "decision": "allow",
+                "reason_code": "OPERATION_ALLOWED",
+                "admission": record.result.get("admission").cloned().unwrap_or_else(|| json!({})),
+                "connector_summary": record.result.get("connector_summary").cloned().unwrap_or_else(|| json!({}))
+            })
+        })
+        .collect::<Vec<_>>();
+    let transitions = observations
+        .iter()
+        .filter(|record| record.event_type == "contract_run.transition_applied")
+        .map(|record| {
+            json!({
+                "from_step_id": record.result.get("from_step_id").cloned().unwrap_or(Value::Null),
+                "outcome": record.result.get("outcome").cloned().unwrap_or(Value::Null),
+                "kind": record.result.get("transition").and_then(|value| value.get("kind")).cloned().unwrap_or(Value::Null),
+                "target_step_id": record.result.get("transition").and_then(|value| value.get("target_step_id")).cloned().unwrap_or(Value::Null),
+                "terminal_status": record.result.get("transition").and_then(|value| value.get("terminal_status")).cloned().unwrap_or(Value::Null),
+                "reason_code": record.result.get("reason_code").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect::<Vec<_>>();
+    let transition_failures = observations
+        .iter()
+        .filter(|record| record.event_type == "contract_run.transition_failed")
+        .map(|record| {
+            json!({
+                "from_step_id": record.result.get("from_step_id").cloned().unwrap_or(Value::Null),
+                "outcome": record.result.get("outcome").cloned().unwrap_or(Value::Null),
+                "reason_code": record.result.get("reason_code").cloned().unwrap_or(Value::Null),
+                "error_code": record.result.get("error_code").cloned().unwrap_or(Value::Null),
+                "message": record.result.get("message").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect::<Vec<_>>();
+    let gates = observations
+        .iter()
+        .filter(|record| record.event_type == "contract_run.gate_resolved")
+        .map(|record| {
+            json!({
+                "gate_id": record.subject.get("gate_id").cloned().unwrap_or(Value::Null),
+                "step_id": record.result.get("step_id").cloned().unwrap_or(Value::Null),
+                "requested_operation_id": record.result.get("requested_operation_id").cloned().unwrap_or(Value::Null),
+                "decision": record.result.get("decision").cloned().unwrap_or(Value::Null),
+                "decided_by": record.subject.get("actor_id").cloned().unwrap_or(Value::Null),
+                "reason_code": record.result.get("reason_code").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect::<Vec<_>>();
+    Response::from_json(&build_contract_run_evidence_response(
+        run_state.run_id.clone(),
+        run_state.contract_id.clone(),
+        run_state.status,
+        run_state.trace_ref.clone(),
+        &observations,
+        json!(steps),
+        json!(gates),
+        json!(transitions),
+        json!(transition_failures),
+        contract_run_policy_summary(run_state.last_admission.as_ref()),
+    ))
+}
+
+async fn dispatch_worker_route(req: Request, state: Arc<WorkerState>, route: WorkerRoute) -> Result<Response> {
+    match route {
+        WorkerRoute::StartContractRun { contract_id } => handle_contract_run_start(req, state, contract_id).await,
+        WorkerRoute::GetContractRunStatus { run_id } => handle_contract_run_status(state, run_id).await,
+        WorkerRoute::GetContractRunNext { run_id } => handle_contract_run_next(state, run_id).await,
+        WorkerRoute::ExecuteContractRunStep { run_id, step_id } => {
+            handle_contract_run_step_execute(req, state, run_id, step_id).await
+        }
+        WorkerRoute::GetCurrentGate { run_id } => handle_contract_run_current_gate(state, run_id).await,
+        WorkerRoute::ResolveGate { run_id, gate_id } => handle_contract_run_gate_resolve(req, state, run_id, gate_id).await,
+        WorkerRoute::GetContractRunEvidence { run_id } => handle_contract_run_evidence(state, run_id).await,
+    }
 }
 
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    let method = req.method().to_string();
+    let path = req.path();
     let state = Arc::new(state_from_env(&env));
+    if let Some(route) = match_worker_route(method.as_str(), path.as_str()) {
+        return dispatch_worker_route(req, state, route).await;
+    }
     let state_run = Arc::clone(&state);
     let state_get_run = Arc::clone(&state);
     let state_get_evidence = Arc::clone(&state);
@@ -982,6 +2607,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     "supports_env_loading": true,
                     "supports_secret_resolution": false,
                     "supports_live_deploy_binding": true
+                },
+                "contract_run": {
+                    "supported": true,
+                    "supports_next_step": true,
+                    "supports_human_gate": true,
+                    "supports_terminal_evidence": true,
+                    "worker_surface": true
                 }
             }))
         })
@@ -1270,7 +2902,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
                 }
                 if exec.waiting_for_human {
-                    let pending = ContractRunState {
+                    let pending = LegacyContractRunState {
                         run_id: run_id.clone(),
                         contract_id: contract_id.clone(),
                         current_step_id: exec.current_step_id.clone(),
@@ -1280,13 +2912,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                         outcomes,
                     };
                     let mut runs = state
-                        .contract_runs
+                        .legacy_contract_runs
                         .lock()
                         .expect("contract run lock poisoned");
                     runs.insert(run_id.clone(), pending.clone());
                     drop(runs);
                     if let Some(kv) = &state.kv_store {
-                        if let Err(err) = kv_put_contract_run_state(kv, &pending).await {
+                        if let Err(err) = kv_put_legacy_contract_run_state(kv, &pending).await {
                             return contract_error(
                                 503,
                                 "storage_unavailable",
@@ -1330,14 +2962,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     );
                 }
                 let run_state = {
-                    let runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                    let runs = state.legacy_contract_runs.lock().expect("contract run lock poisoned");
                     runs.get(&run_id).cloned()
                 };
                 let run_state = match run_state {
                     Some(v) => v,
                     None => {
                         if let Some(kv) = &state.kv_store {
-                            match kv_get_contract_run_state(kv, &run_id).await {
+                            match kv_get_legacy_contract_run_state(kv, &run_id).await {
                                 Ok(Some(v)) => v,
                                 Ok(None) => {
                                     return contract_error(
@@ -1464,11 +3096,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     return contract_error(503, "storage_unavailable", "storage adapter failed", vec![err.message]);
                 }
                 {
-                    let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                    let mut runs = state.legacy_contract_runs.lock().expect("contract run lock poisoned");
                     runs.remove(&run_id);
                 }
                 if let Some(kv) = &state.kv_store {
-                    if let Err(err) = kv_delete_contract_run_state(kv, &run_id).await {
+                    if let Err(err) = kv_delete_legacy_contract_run_state(kv, &run_id).await {
                         return contract_error(
                             503,
                             "storage_unavailable",

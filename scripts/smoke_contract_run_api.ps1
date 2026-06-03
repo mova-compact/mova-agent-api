@@ -31,7 +31,7 @@ function Invoke-JsonRequest {
   }
 
   if ([int]$response.StatusCode -ne $ExpectedStatus) {
-    throw "Unexpected status for $Method $Url: got $([int]$response.StatusCode), expected $ExpectedStatus"
+    throw "Unexpected status for $Method ${Url}: got $([int]$response.StatusCode), expected $ExpectedStatus"
   }
 
   if ($response.Content) {
@@ -72,4 +72,11 @@ if ($gate.gate_id) {
   $null = Invoke-JsonRequest -Method POST -Url "$BaseUrl/contract-runs/$runId/steps/$stepId/execute" -Body $executeBody -ExpectedStatus 202
 }
 
-$null = Invoke-JsonRequest -Method GET -Url "$BaseUrl/contract-runs/$runId/evidence"
+$evidence = Invoke-JsonRequest -Method GET -Url "$BaseUrl/contract-runs/$runId/evidence"
+
+[ordered]@{
+  run = $start
+  next = $next
+  gate = $gate
+  evidence = $evidence
+} | ConvertTo-Json -Depth 20
