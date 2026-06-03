@@ -1,0 +1,36 @@
+{
+  "run_id": "contract_run_req_contract_001",
+  "step_id": "step_001",
+  "event_type": "contract_run.step_executed",
+  "timestamp": "2026-05-23T08:33:00Z",
+  "subject": {
+    "operation_id": "op_notify_webhook"
+  },
+  "result": {
+    "status": "step_completed",
+    "admission": {
+      "decision": "allow",
+      "reason_code": "OPERATION_ALLOWED",
+      "allowed_connector_id": "connector.http.generic.v1",
+      "allowed_endpoint_ref": "webhook_site_test",
+      "allowed_method": "POST"
+    },
+    "connector_summary": {
+      "connector_id": "connector.http.generic.v1",
+      "endpoint_ref": "webhook_site_test",
+      "method": "POST",
+      "side_effect_intent": "external_network",
+      "connector_status": "completed",
+      "provider": "deterministic_local_http_generic",
+      "connector_mode": "deterministic_local_http_generic",
+      "response_preview": {
+        "message": "contract-run smoke"
+      },
+      "attempts": 1,
+      "timeout_ms": 10000,
+      "resolved_url": "https://webhook.site/test-endpoint"
+    }
+  },
+  "metadata": {},
+  "evidence_ref": "ev_contract_run_req_contract_001_003"
+}

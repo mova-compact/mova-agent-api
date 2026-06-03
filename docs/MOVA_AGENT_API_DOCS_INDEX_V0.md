@@ -8,6 +8,8 @@
   - public route and error contract.
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
   - contract-run corridor summary and V0 limitation set.
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_REAL_EXECUTION_PROOF_V0.md`
+  - proof that connector_action steps now execute through guarded connector boundary.
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
   - invariant list for controlled execution without bypass paths.
 - `schemas/*.schema.json`
@@ -37,6 +39,7 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `docs/MOVA_AGENT_API_ROADMAP_V0.md`
 - `docs/MOVA_AGENT_API_RUNTIME_AUTHORITY_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_REAL_EXECUTION_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_PRODUCTION_AUTH_CONTRACT_V0.md`

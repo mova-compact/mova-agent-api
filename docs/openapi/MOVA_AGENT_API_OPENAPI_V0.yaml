@@ -507,19 +507,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required:
-                - operation_id
-                - input_payload
-                - correlation
-              properties:
-                operation_id:
-                  type: string
-                input_payload:
-                  type: object
-                correlation:
-                  type: object
+              $ref: "#/components/schemas/ContractStepExecuteRequest"
       responses:
         "200":
           description: Step execution result
@@ -534,7 +522,7 @@ paths:
               schema:
                 type: object
         "403":
-          description: Policy or guard denial
+          description: Policy or guard denial (`connector_override_forbidden`, `operation_not_allowed`, `human_gate_required`, connector guard denial)
           content:
             application/json:
               schema:
@@ -547,6 +535,18 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Stale step or run-state conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Connector runtime failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Connector timeout
           content:
             application/json:
               schema:
@@ -985,6 +985,20 @@ components:
           nullable: true
         requires_review:
           type: boolean
+    ContractStepExecuteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operation_id
+        - input_payload
+        - correlation
+      properties:
+        operation_id:
+          type: string
+        input_payload:
+          type: object
+        correlation:
+          type: object
     OperationAdmission:
       type: object
       additionalProperties: false
@@ -1151,6 +1165,26 @@ components:
               type: array
               items:
                 type: object
+                additionalProperties: false
+                required:
+                  - step_id
+                  - operation_id
+                  - decision
+                  - reason_code
+                  - admission
+                  - connector_summary
+                properties:
+                  step_id:
+                    type: string
+                  operation_id: {}
+                  decision:
+                    type: string
+                  reason_code:
+                    type: string
+                  admission:
+                    type: object
+                  connector_summary:
+                    type: object
             gates:
               type: array
               items:

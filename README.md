@@ -43,6 +43,7 @@ Controlled contract-run corridor:
 
 - V0 planning / skeleton
 - flat action path and controlled contract-run corridor available as local V0 behavior
+- contract-run connector_action steps execute through guarded `ConnectorExecutor` boundary
 - no legacy implementation copied here
 
 ## Source of truth rule
@@ -80,3 +81,6 @@ Controlled contract-run corridor:
 `/actions/run` remains the low-level single-action execution path.
 
 The contract-run API is the product-level corridor where the contract-run state owns step order and the agent can execute only the current admitted operation. This layer does not add cognition, dynamic routing, or autonomous orchestration.
+
+Product corridor routes use `/contracts/{contract_id}/runs` and `/contract-runs/{run_id}/...`.
+Legacy `/contracts/{contract_id}/run` remains compatibility-only and must not be extended for new product behavior.

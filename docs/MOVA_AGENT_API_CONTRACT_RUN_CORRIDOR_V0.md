@@ -17,6 +17,12 @@
 - No raw URL execution.
 - No production connector SDK integrations.
 
+## Real guarded connector execution
+
+Contract-run step execution no longer fabricates connector results for `connector_action` steps.
+For `connector_action` steps, execution builds `ConnectorExecutionRequest` from `OperationAdmission` and contract step metadata only.
+Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent`.
+
 ## Boundary verdict
 
 PASS_WITH_WARNINGS
@@ -24,7 +30,9 @@ PASS_WITH_WARNINGS
 ## Known limitations
 
 - V0 uses static/fixture contracts.
+- Generic flow-to-step conversion is limited to current V0 connector shape.
 - No remote contract package loading.
 - No scheduler.
 - No marketplace.
 - No arbitrary provider connectors.
+- Production provider SDK integrations remain forbidden.

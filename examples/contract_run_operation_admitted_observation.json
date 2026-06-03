@@ -1,0 +1,19 @@
+{
+  "run_id": "contract_run_req_contract_001",
+  "step_id": "step_001",
+  "event_type": "contract_run.operation_admitted",
+  "timestamp": "2026-05-23T08:32:30Z",
+  "subject": {
+    "operation_id": "op_notify_webhook"
+  },
+  "result": {
+    "operation_id": "op_notify_webhook",
+    "decision": "allow",
+    "reason_code": "NEXT_OPERATION_ALLOWED",
+    "allowed_connector_id": "connector.http.generic.v1",
+    "allowed_endpoint_ref": "webhook_site_test",
+    "allowed_method": "POST"
+  },
+  "metadata": {},
+  "evidence_ref": "ev_contract_run_req_contract_001_002"
+}

@@ -17,6 +17,10 @@
 13. Connector never owns authorization.
 14. Policy never becomes planner/orchestrator.
 15. Contract-run state never becomes autonomous agent logic.
+16. Agent never submits `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent` for contract-run execution.
+17. Connector execution request is built only from `OperationAdmission` and contract step metadata.
+18. Every allowed `connector_action` has `contract_run.operation_admitted` observation before side effect.
+19. Every `connector_action` evidence includes connector summary and admission summary.
 
 ## Known V0 limitation
 

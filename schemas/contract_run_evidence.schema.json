@@ -25,7 +25,29 @@
       "additionalProperties": false,
       "required": ["steps", "gates"],
       "properties": {
-        "steps": { "type": "array", "items": { "type": "object" } },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "step_id",
+              "operation_id",
+              "decision",
+              "reason_code",
+              "admission",
+              "connector_summary"
+            ],
+            "properties": {
+              "step_id": { "type": "string" },
+              "operation_id": {},
+              "decision": { "type": "string" },
+              "reason_code": { "type": "string" },
+              "admission": { "type": "object" },
+              "connector_summary": { "type": "object" }
+            }
+          }
+        },
         "gates": { "type": "array", "items": { "type": "object" } }
       }
     },

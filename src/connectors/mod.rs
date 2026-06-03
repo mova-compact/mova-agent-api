@@ -131,11 +131,24 @@ impl ConnectorExecutionConfig {
     pub fn deterministic_local_default() -> Self {
         Self {
             adapter_kind: "deterministic_local".to_string(),
-            allowed_connectors: vec!["connector.docs.v1".to_string()],
+            allowed_connectors: vec![
+                "connector.docs.v1".to_string(),
+                "connector.http.generic.v1".to_string(),
+            ],
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
             allowed_webhook_urls: Vec::new(),
-            endpoint_registry: Vec::new(),
+            endpoint_registry: vec![EndpointRegistryEntry {
+                endpoint_ref: "webhook_site_test".to_string(),
+                url: "https://webhook.site/test-endpoint".to_string(),
+                allowed_methods: vec!["POST".to_string()],
+                allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                required_scopes: vec!["contracts.run".to_string()],
+                timeout_ms: 10_000,
+                max_retries: 0,
+                evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                enabled: true,
+            }],
             timeout_ms: 10_000,
             max_retries: 0,
         }
@@ -200,7 +213,7 @@ impl ConnectorExecutionConfig {
                 ));
             }
         }
-        if self.adapter_kind == "http_generic" {
+        if self.adapter_kind == "http_generic" || !self.endpoint_registry.is_empty() {
             if self.endpoint_registry.is_empty() {
                 return Err(ConnectorExecutionError::new(
                     "connector_config_invalid",
@@ -314,6 +327,9 @@ impl ConnectorExecutor for DeterministicLocalConnectorExecutor {
                 "connector_id is not allowed",
             ));
         }
+        if request.connector_id == "connector.http.generic.v1" {
+            return self.execute_deterministic_http_generic(request).await;
+        }
         if !self
             .config
             .allowed_side_effect_intents
@@ -350,6 +366,126 @@ impl ConnectorExecutor for DeterministicLocalConnectorExecutor {
         Ok(ConnectorExecutionResult {
             call,
             guard_reason: "connector_guard_allow".to_string(),
+        })
+    }
+}
+
+impl DeterministicLocalConnectorExecutor {
+    async fn execute_deterministic_http_generic(
+        &self,
+        request: ConnectorExecutionRequest,
+    ) -> Result<ConnectorExecutionResult, ConnectorExecutionError> {
+        if request.side_effect_intent != SideEffectIntent::ExternalNetwork {
+            return Err(ConnectorExecutionError::new(
+                "connector_side_effect_denied",
+                "http_generic requires external_network side_effect_intent",
+            ));
+        }
+        let endpoint_ref = request
+            .request
+            .get("endpoint_ref")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_request_invalid",
+                    "endpoint_ref is required for deterministic local http_generic",
+                )
+            })?
+            .to_string();
+        let endpoint = self
+            .config
+            .endpoint_registry
+            .iter()
+            .find(|entry| entry.endpoint_ref == endpoint_ref)
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "endpoint_unknown",
+                    "endpoint_ref is not configured in runtime allowlist",
+                )
+            })?;
+        if !endpoint.enabled {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_disabled",
+                "endpoint_ref is disabled",
+            ));
+        }
+        if !endpoint
+            .allowed_side_effect_intents
+            .iter()
+            .any(|intent| *intent == request.side_effect_intent)
+        {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_intent_denied",
+                "endpoint_ref does not allow side_effect_intent",
+            ));
+        }
+
+        let method = request
+            .request
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("POST")
+            .to_ascii_uppercase();
+        if method != "GET" && method != "POST" {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_method_denied",
+                "http_generic supports only GET/POST in V0",
+            ));
+        }
+        if !endpoint.allowed_methods.iter().any(|allowed| allowed == &method) {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_method_denied",
+                "method is not allowlisted for endpoint_ref",
+            ));
+        }
+        let scopes = auth_scopes_from_context(&request.auth_context);
+        if let Some(required) = endpoint
+            .required_scopes
+            .iter()
+            .find(|required| !scopes.iter().any(|scope| scope == *required))
+        {
+            return Err(ConnectorExecutionError::new(
+                "endpoint_scope_denied",
+                &format!("required scope missing: {required}"),
+            ));
+        }
+
+        let body_preview = request
+            .request
+            .get("body")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let call = ConnectorCall {
+            connector_id: request.connector_id,
+            call_id: request.call_id,
+            side_effect_intent: request.side_effect_intent,
+            request: request.request,
+            auth_context: request.auth_context,
+            policy_result: request.policy_result,
+            status: ConnectorCallStatus::Completed,
+            response: json!({
+                "connector_mode": "deterministic_local_http_generic",
+                "side_effect_performed": false,
+                "provider": "deterministic_local_http_generic",
+                "endpoint_ref": endpoint_ref,
+                "resolved_url": endpoint.url,
+                "method": method,
+                "attempts": 1,
+                "max_retries": endpoint.max_retries,
+                "timeout_ms": endpoint.timeout_ms,
+                "response_preview": body_preview,
+                "credential_ref_count": request.credential_refs.len()
+            }),
+            timing: ConnectorTiming {
+                started_at: request.started_at,
+                finished_at: Some("2026-05-23T10:30:01Z".to_string()),
+                duration_ms: Some(1),
+            },
+        };
+
+        Ok(ConnectorExecutionResult {
+            call,
+            guard_reason: "connector_guard_allow_deterministic_http_generic".to_string(),
         })
     }
 }
@@ -981,6 +1117,36 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "connector_side_effect_denied");
+    }
+
+    #[tokio::test]
+    async fn deterministic_local_executor_allows_http_generic_with_allowlisted_endpoint() {
+        let exec =
+            DeterministicLocalConnectorExecutor::new(ConnectorExecutionConfig::deterministic_local_default());
+        let result = exec
+            .execute(ConnectorExecutionRequest {
+                connector_id: "connector.http.generic.v1".to_string(),
+                call_id: "call_http_generic_01".to_string(),
+                side_effect_intent: SideEffectIntent::ExternalNetwork,
+                request: json!({
+                    "endpoint_ref": "webhook_site_test",
+                    "method": "POST",
+                    "body": {"message":"ok"}
+                }),
+                auth_context: json!({"scopes":["contracts.run"]}),
+                credential_refs: Vec::new(),
+                policy_result: PolicySummary {
+                    decision: AdmissionDecision::Allow,
+                    policy_version: "policy.default.v0".to_string(),
+                    reason_code: "authorized".to_string(),
+                },
+                started_at: "2026-05-23T09:00:00Z".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.call.status, ConnectorCallStatus::Completed);
+        assert_eq!(result.call.response["provider"], "deterministic_local_http_generic");
+        assert_eq!(result.call.response["endpoint_ref"], "webhook_site_test");
     }
 
     #[tokio::test]

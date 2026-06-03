@@ -178,6 +178,14 @@ struct ApiError {
     details: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ContractStepConnectorMetadata {
+    connector_id: String,
+    endpoint_ref: Option<String>,
+    method: Option<String>,
+    side_effect_intent: Option<SideEffectIntent>,
+}
+
 pub fn router() -> Router {
     router_with_state(AppState::new())
 }
@@ -1268,6 +1276,70 @@ fn current_contract_step(state: &ContractRunState) -> Option<crate::contract_ste
         .cloned()
 }
 
+fn admitted_contract_for_run(state: &AppState, run_state: &ContractRunState) -> Option<AdmittedContract> {
+    let contracts = state
+        .admitted_contracts
+        .lock()
+        .expect("contract registry lock poisoned");
+    contracts.get(&run_state.contract_id).cloned()
+}
+
+fn parse_side_effect_intent_str(value: &str) -> Option<SideEffectIntent> {
+    match value {
+        "none" => Some(SideEffectIntent::None),
+        "local_only" => Some(SideEffectIntent::LocalOnly),
+        "external_network" => Some(SideEffectIntent::ExternalNetwork),
+        "destructive" => Some(SideEffectIntent::Destructive),
+        _ => None,
+    }
+}
+
+fn connector_metadata_for_current_step(
+    admitted_contract: &AdmittedContract,
+    step_id: &str,
+) -> Result<Option<ContractStepConnectorMetadata>, ApiError> {
+    let step = flow_step_by_id(&admitted_contract.flow, step_id).ok_or(ApiError {
+        code: "contract_step_not_found".to_string(),
+        message: "contract step was not found".to_string(),
+        details: vec![format!("step_id: {step_id}")],
+    })?;
+    if step.step_type.as_deref() != Some("connector_action") {
+        return Ok(None);
+    }
+    let connector = step.connector.as_ref().ok_or(ApiError {
+        code: "contract_connector_metadata_missing".to_string(),
+        message: "connector_action step is missing connector metadata".to_string(),
+        details: vec![format!("step_id: {step_id}")],
+    })?;
+    let connector_id = connector
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ApiError {
+            code: "contract_connector_metadata_missing".to_string(),
+            message: "connector_action step is missing connector name".to_string(),
+            details: vec![format!("step_id: {step_id}")],
+        })?
+        .to_string();
+    let side_effect_intent = connector
+        .get("side_effect_intent")
+        .and_then(|value| value.as_str())
+        .and_then(parse_side_effect_intent_str);
+
+    Ok(Some(ContractStepConnectorMetadata {
+        connector_id,
+        endpoint_ref: connector
+            .get("endpoint_ref")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        method: connector
+            .get("method")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_ascii_uppercase()),
+        side_effect_intent,
+    }))
+}
+
 fn contract_run_policy_summary(admission: Option<&OperationAdmission>) -> crate::policy::PolicySummary {
     crate::policy::PolicySummary {
         decision: admission
@@ -1335,8 +1407,30 @@ fn contract_run_scope_admission(
 
 fn build_current_operation_admission(
     run_state: &ContractRunState,
+    admitted_contract: Option<&AdmittedContract>,
     verifier: &dyn AuthVerifier,
 ) -> OperationAdmission {
+    if admitted_contract.is_none() {
+        return OperationAdmission {
+            admission_id: format!("adm_{}", run_state.run_id),
+            decision: AdmissionDecision::Deny,
+            reason_code: "CONTRACT_NOT_FOUND".to_string(),
+            policy_version: "policy.default.v0".to_string(),
+            contract_id: run_state.contract_id.clone(),
+            run_id: run_state.run_id.clone(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state
+                .next_allowed_operation_id
+                .clone()
+                .unwrap_or_else(|| "op_terminal".to_string()),
+            allowed_connector_id: None,
+            allowed_endpoint_ref: None,
+            allowed_method: None,
+            constraints: json!({}),
+            expires_at: None,
+        };
+    }
+    let admitted_contract = admitted_contract.expect("checked above");
     let scope_admission = contract_run_scope_admission(
         &run_state.run_id,
         run_state
@@ -1419,16 +1513,41 @@ fn build_current_operation_admission(
         };
     }
 
-    let (connector_id, endpoint_ref, method, reason_code) = if step.step_id == "step_001" {
-        (
-            Some("connector.http.generic.v1".to_string()),
-            Some("webhook_site_test".to_string()),
-            Some("POST".to_string()),
-            "NEXT_OPERATION_ALLOWED".to_string(),
-        )
-    } else {
-        (None, None, None, "HUMAN_GATE_APPROVED".to_string())
-    };
+    let connector_metadata =
+        connector_metadata_for_current_step(admitted_contract, &run_state.current_step_id).ok().flatten();
+    let (connector_id, endpoint_ref, method, reason_code, constraints) =
+        if let Some(metadata) = connector_metadata {
+            (
+                Some(metadata.connector_id),
+                metadata.endpoint_ref,
+                metadata.method,
+                "NEXT_OPERATION_ALLOWED".to_string(),
+                json!({
+                    "side_effect_intent": metadata.side_effect_intent.map(|value| serde_json::to_value(value).unwrap_or(Value::Null)).unwrap_or(Value::Null)
+                }),
+            )
+        } else if step.step_type == ContractStepType::Terminal {
+            return OperationAdmission {
+                admission_id: format!("adm_{}", run_state.run_id),
+                decision: AdmissionDecision::Deny,
+                reason_code: "RUN_ALREADY_TERMINAL".to_string(),
+                policy_version: "policy.default.v0".to_string(),
+                contract_id: run_state.contract_id.clone(),
+                run_id: run_state.run_id.clone(),
+                step_id: run_state.current_step_id.clone(),
+                operation_id: step
+                    .operation_id
+                    .clone()
+                    .unwrap_or_else(|| "op_terminal".to_string()),
+                allowed_connector_id: None,
+                allowed_endpoint_ref: None,
+                allowed_method: None,
+                constraints: json!({}),
+                expires_at: None,
+            };
+        } else {
+            (None, None, None, "HUMAN_GATE_APPROVED".to_string(), json!({}))
+        };
 
     OperationAdmission {
         admission_id: format!("adm_{}", run_state.run_id),
@@ -1445,9 +1564,18 @@ fn build_current_operation_admission(
         allowed_connector_id: connector_id,
         allowed_endpoint_ref: endpoint_ref,
         allowed_method: method,
-        constraints: json!({}),
+        constraints,
         expires_at: Some("2026-05-23T08:35:00Z".to_string()),
     }
+}
+
+fn contains_forbidden_connector_override(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    ["connector_id", "endpoint_ref", "method", "target_url", "side_effect_intent"]
+        .iter()
+        .any(|key| object.contains_key(*key))
 }
 
 fn append_contract_run_observation(
@@ -1558,7 +1686,11 @@ async fn post_contract_run_start(
         gate: None,
         last_admission: None,
     };
-    let admission = build_current_operation_admission(&run_state, state.auth_verifier.as_ref());
+    let admission = build_current_operation_admission(
+        &run_state,
+        _contract.as_ref(),
+        state.auth_verifier.as_ref(),
+    );
     run_state.last_admission = Some(admission);
     run_state.observation_count = append_contract_run_observation(
         &state,
@@ -1641,7 +1773,12 @@ async fn get_contract_run_next(
                 .into_response()
         }
     };
-    let admission = build_current_operation_admission(run_state, state.auth_verifier.as_ref());
+    let admitted_contract = admitted_contract_for_run(&state, run_state);
+    let admission = build_current_operation_admission(
+        run_state,
+        admitted_contract.as_ref(),
+        state.auth_verifier.as_ref(),
+    );
     run_state.last_admission = Some(admission.clone());
     let step = current_contract_step(run_state).expect("current step must exist");
     (
@@ -1765,16 +1902,144 @@ async fn post_contract_run_step_execute(
         )
             .into_response();
     }
+    if payload.get("target_url").is_some() || payload.get("side_effect_intent").is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "connector_override_forbidden".to_string(),
+                    message: "client-provided connector override is forbidden".to_string(),
+                    details: vec!["CONNECTOR_OVERRIDE_FORBIDDEN".to_string()],
+                },
+            }),
+        )
+            .into_response();
+    }
+    if contains_forbidden_connector_override(payload.get("input_payload").unwrap_or(&Value::Null)) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "connector_override_forbidden".to_string(),
+                    message: "nested connector override is forbidden".to_string(),
+                    details: vec!["CONNECTOR_OVERRIDE_FORBIDDEN".to_string()],
+                },
+            }),
+        )
+            .into_response();
+    }
 
     let step = current_contract_step(&run_state).expect("current step must exist");
+    let admitted_contract = admitted_contract_for_run(&state, &run_state);
+    let admission = build_current_operation_admission(
+        &run_state,
+        admitted_contract.as_ref(),
+        state.auth_verifier.as_ref(),
+    );
+    if admission.decision != AdmissionDecision::Allow {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "operation_not_allowed".to_string(),
+                    message: "operation admission denied".to_string(),
+                    details: vec![format!("reason_code: {}", admission.reason_code)],
+                },
+            }),
+        )
+            .into_response();
+    }
+
+    run_state.last_admission = Some(admission.clone());
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: step.step_id.clone(),
+            event_type: "contract_run.operation_admitted".to_string(),
+            timestamp: "2026-05-23T08:32:30Z".to_string(),
+            subject: json!({"operation_id": operation_id}),
+            result: json!({
+                "operation_id": operation_id,
+                "decision": "allow",
+                "reason_code": admission.reason_code,
+                "allowed_connector_id": admission.allowed_connector_id,
+                "allowed_endpoint_ref": admission.allowed_endpoint_ref,
+                "allowed_method": admission.allowed_method
+            }),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+
     let connector_summary = if step.step_type == ContractStepType::ConnectorAction {
+        let side_effect_intent = admission
+            .constraints
+            .get("side_effect_intent")
+            .and_then(|value| value.as_str())
+            .and_then(parse_side_effect_intent_str)
+            .unwrap_or(SideEffectIntent::ExternalNetwork);
+        let connector_id = match admission.allowed_connector_id.clone() {
+            Some(value) => value,
+            None => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: ApiError {
+                            code: "connector_not_allowed".to_string(),
+                            message: "connector metadata missing in admission".to_string(),
+                            details: vec!["CONNECTOR_NOT_ALLOWED".to_string()],
+                        },
+                    }),
+                )
+                    .into_response()
+            }
+        };
+        let method = admission
+            .allowed_method
+            .clone()
+            .unwrap_or_else(|| "POST".to_string());
+        let endpoint_ref = admission.allowed_endpoint_ref.clone();
+        let auth_context = serde_json::to_value(&run_state.auth_context).unwrap_or_else(|_| json!({}));
+        let connector_request = ConnectorExecutionRequest {
+            connector_id: connector_id.clone(),
+            call_id: format!("call_{}_{}", run_state.run_id, operation_id),
+            side_effect_intent,
+            request: redact_json(&json!({
+                "endpoint_ref": endpoint_ref,
+                "method": method,
+                "body": payload.get("input_payload").cloned().unwrap_or_else(|| json!({})),
+                "run_id": run_state.run_id,
+                "correlation_id": payload
+                    .get("correlation")
+                    .and_then(|value| value.get("correlation_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "trace_ref": run_state.trace_ref,
+                "input": payload.get("input_payload").cloned().unwrap_or_else(|| json!({}))
+            })),
+            auth_context: redact_json(&auth_context),
+            credential_refs: vec![],
+            policy_result: contract_run_policy_summary(Some(&admission)),
+            started_at: "2026-05-23T08:33:00Z".to_string(),
+        };
+        let connector_result = match state.connector_executor.execute(connector_request).await {
+            Ok(value) => value,
+            Err(err) => return connector_unavailable(&err).into_response(),
+        };
         json!({
-            "connector_id": "connector.http.generic.v1",
-            "endpoint_ref": "webhook_site_test",
-            "method": "POST",
-            "side_effect_intent": "external_network",
-            "provider": "contract_run_fixture",
-            "response_preview": "contract-run smoke"
+            "connector_id": connector_id,
+            "endpoint_ref": endpoint_ref,
+            "method": method,
+            "side_effect_intent": side_effect_intent,
+            "connector_status": connector_result.call.status,
+            "provider": connector_result.call.response.get("provider").cloned().unwrap_or_else(|| json!("unknown")),
+            "connector_mode": connector_result.call.response.get("connector_mode").cloned().unwrap_or_else(|| json!("unknown")),
+            "response_preview": connector_result.call.response.get("response_preview").cloned().unwrap_or_else(|| json!({})),
+            "attempts": connector_result.call.response.get("attempts").cloned().unwrap_or_else(|| json!(1)),
+            "timeout_ms": connector_result.call.response.get("timeout_ms").cloned().unwrap_or_else(|| json!(0)),
+            "resolved_url": connector_result.call.response.get("resolved_url").cloned().unwrap_or(Value::Null)
         })
     } else {
         json!({
@@ -1820,10 +2085,10 @@ async fn post_contract_run_step_execute(
         run_id: run_state.run_id.clone(),
         step_id: step.step_id.clone(),
         operation_id: operation_id.clone(),
-        allowed_connector_id: Some("connector.http.generic.v1".to_string()).filter(|_| step.step_id == "step_001"),
-        allowed_endpoint_ref: Some("webhook_site_test".to_string()).filter(|_| step.step_id == "step_001"),
-        allowed_method: Some("POST".to_string()).filter(|_| step.step_id == "step_001"),
-        constraints: json!({}),
+        allowed_connector_id: admission.allowed_connector_id.clone(),
+        allowed_endpoint_ref: admission.allowed_endpoint_ref.clone(),
+        allowed_method: admission.allowed_method.clone(),
+        constraints: admission.constraints.clone(),
         expires_at: None,
     });
     run_state.observation_count = append_contract_run_observation(
@@ -1837,6 +2102,13 @@ async fn post_contract_run_step_execute(
             subject: json!({"operation_id": operation_id}),
             result: json!({
                 "status": "step_completed",
+                "admission": {
+                    "decision": "allow",
+                    "reason_code": "OPERATION_ALLOWED",
+                    "allowed_connector_id": admission.allowed_connector_id,
+                    "allowed_endpoint_ref": admission.allowed_endpoint_ref,
+                    "allowed_method": admission.allowed_method
+                },
                 "connector_summary": connector_summary
             }),
             metadata: json!({}),
@@ -1861,6 +2133,8 @@ async fn post_contract_run_step_execute(
             "operation_id": operation_id,
             "status": "step_completed",
             "next_step_id": run_state.current_step_id,
+            "current_step_id": run_state.current_step_id,
+            "next_allowed_operation_id": run_state.next_allowed_operation_id,
             "trace_ref": run_state.trace_ref,
             "observation_count": run_state.observation_count,
             "policy_summary": {
@@ -2071,6 +2345,8 @@ async fn post_contract_run_gate_resolve(
                 HumanGateDecision::Reject => "reject"
             },
             "next_step_id": run_state.current_step_id,
+            "current_step_id": run_state.current_step_id,
+            "next_allowed_operation_id": run_state.next_allowed_operation_id,
             "trace_ref": run_state.trace_ref,
             "observation_count": run_state.observation_count
         })),
@@ -2118,6 +2394,7 @@ async fn get_contract_run_evidence(
                 "operation_id": record.subject.get("operation_id").cloned().unwrap_or(Value::Null),
                 "decision": "allow",
                 "reason_code": "OPERATION_ALLOWED",
+                "admission": record.result.get("admission").cloned().unwrap_or_else(|| json!({})),
                 "connector_summary": record.result.get("connector_summary").cloned().unwrap_or_else(|| json!({}))
             })
         })

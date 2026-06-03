@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation_id", "input_payload", "correlation"],
+  "properties": {
+    "operation_id": { "type": "string" },
+    "input_payload": { "type": "object" },
+    "correlation": { "type": "object" }
+  }
+}
