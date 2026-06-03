@@ -4,7 +4,7 @@
 
 use crate::connectors::{
     create_connector_executor, ConnectorExecutionConfig, ConnectorExecutionError, ConnectorExecutionRequest,
-    ConnectorExecutor, SideEffectIntent,
+    ConnectorExecutor, ProviderConnectorRegistryEntry, SideEffectIntent,
 };
 use crate::contract_run::{
     contract_steps_from_flow, gate_for_step, resolve_flow_transition, validate_contract_run_flow,
@@ -64,6 +64,7 @@ pub struct AppState {
     connector_executor: Arc<dyn ConnectorExecutor>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_provider_capabilities: RuntimeProviderCapabilities,
+    provider_connector_registry: Vec<ProviderConnectorRegistryEntry>,
     admitted_contracts: Arc<Mutex<HashMap<String, AdmittedContract>>>,
     legacy_contract_runs: Arc<Mutex<HashMap<String, LegacyContractRunState>>>,
     contract_runs: Arc<Mutex<HashMap<String, ContractRunState>>>,
@@ -88,6 +89,7 @@ struct CapabilitiesResponse {
     execution_path: Vec<String>,
     runtime_provider: RuntimeProviderCapabilities,
     contract_run: Value,
+    provider_connectors: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,6 +185,9 @@ struct ApiError {
 struct ContractStepConnectorMetadata {
     connector_id: String,
     endpoint_ref: Option<String>,
+    connector_ref: Option<String>,
+    provider: Option<String>,
+    operation: Option<String>,
     method: Option<String>,
     side_effect_intent: Option<SideEffectIntent>,
 }
@@ -232,6 +237,7 @@ impl AppState {
             connector_executor,
             secret_resolver,
             runtime_provider_capabilities: provider.capabilities(),
+            provider_connector_registry: runtime.connectors.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
             contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -259,6 +265,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            provider_connector_registry: connector_config.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
             contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -284,6 +291,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            provider_connector_registry: connector_config.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
             contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -310,6 +318,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            provider_connector_registry: ConnectorExecutionConfig::deterministic_local_default()
+                .provider_connector_registry,
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
             contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -336,6 +346,8 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            provider_connector_registry: ConnectorExecutionConfig::deterministic_local_default()
+                .provider_connector_registry,
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
             contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -379,6 +391,17 @@ async fn get_capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
             "supports_next_step": true,
             "supports_human_gate": true,
             "supports_terminal_evidence": true
+        }),
+        provider_connectors: json!({
+            "supported": true,
+            "registry_env": "MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON",
+            "providers": [
+                {
+                    "provider": "telegram",
+                    "operations": ["send_message"],
+                    "status": "first_adapter"
+                }
+            ]
         }),
     })
 }
@@ -462,7 +485,17 @@ fn storage_unavailable(err: &StorageError) -> (StatusCode, Json<ErrorResponse>) 
 }
 
 fn connector_unavailable(err: &ConnectorExecutionError) -> (StatusCode, Json<ErrorResponse>) {
-    let status = if err.code == "connector_side_effect_denied" || err.code == "connector_denied" {
+    let status = if err.code == "connector_secret_missing" || err.code == "connector_secret_unavailable" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if err.code == "connector_side_effect_denied"
+        || err.code == "connector_denied"
+        || err.code == "connector_ref_not_allowed"
+        || err.code == "connector_ref_disabled"
+        || err.code == "connector_operation_not_allowed"
+        || err.code == "provider_not_supported"
+        || err.code == "provider_operation_not_supported"
+        || err.code == "connector_scope_denied"
+    {
         StatusCode::FORBIDDEN
     } else {
         StatusCode::BAD_GATEWAY
@@ -1218,11 +1251,8 @@ fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, Admitte
     let mut contracts = admitted_contracts
         .lock()
         .expect("contract registry lock poisoned");
-    if contracts.contains_key("daily_owner_report_v0") {
-        return;
-    }
-
-    let flow = parse_inline_flow_json(&json!({
+    if !contracts.contains_key("daily_owner_report_v0") {
+        let flow = parse_inline_flow_json(&json!({
         "version": "1.0",
         "description": "controlled contract-run corridor fixture",
         "entry": "step_001",
@@ -1257,28 +1287,73 @@ fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, Admitte
                 "next": {"default": {"terminal":"completed"}}
             }
         ]
-    }))
-    .expect("fixture contract must parse");
+        }))
+        .expect("fixture contract must parse");
 
-    contracts.insert(
-        "daily_owner_report_v0".to_string(),
-        AdmittedContract {
-            contract_id: "daily_owner_report_v0".to_string(),
-            execution_type: "agent".to_string(),
-            source_type: Some("fixture".to_string()),
-            source_url: None,
-            commit_sha: None,
-            contract_path: None,
-            registered_at: Some("2026-05-23T08:30:00Z".to_string()),
-            admitted: Some(true),
-            manifest: None,
-            flow,
-            policy: None,
-            connector_requirements: None,
-            evidence_expectations: None,
-            open_questions: None,
-        },
-    );
+        contracts.insert(
+            "daily_owner_report_v0".to_string(),
+            AdmittedContract {
+                contract_id: "daily_owner_report_v0".to_string(),
+                execution_type: "agent".to_string(),
+                source_type: Some("fixture".to_string()),
+                source_url: None,
+                commit_sha: None,
+                contract_path: None,
+                registered_at: Some("2026-05-23T08:30:00Z".to_string()),
+                admitted: Some(true),
+                manifest: None,
+                flow,
+                policy: None,
+                connector_requirements: None,
+                evidence_expectations: None,
+                open_questions: None,
+            },
+        );
+    }
+
+    if !contracts.contains_key("provider_connector_owner_report_v0") {
+        let provider_flow = parse_inline_flow_json(&json!({
+            "version": "1.0",
+            "description": "provider connector proxy demo contract",
+            "entry": "send_owner_report",
+            "steps": [
+                {
+                    "id": "send_owner_report",
+                    "step_type": "connector_action",
+                    "operation_id": "op_send_owner_report",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name":"provider.connector.v1",
+                        "connector_ref":"telegram.owner_report_channel",
+                        "side_effect_intent":"external_network",
+                        "operation":"send_message"
+                    },
+                    "next": {"default": {"terminal":"completed"}}
+                }
+            ]
+        }))
+        .expect("provider connector fixture contract must parse");
+
+        contracts.insert(
+            "provider_connector_owner_report_v0".to_string(),
+            AdmittedContract {
+                contract_id: "provider_connector_owner_report_v0".to_string(),
+                execution_type: "agent".to_string(),
+                source_type: Some("fixture".to_string()),
+                source_url: None,
+                commit_sha: None,
+                contract_path: None,
+                registered_at: Some("2026-05-23T08:30:00Z".to_string()),
+                admitted: Some(true),
+                manifest: None,
+                flow: provider_flow,
+                policy: None,
+                connector_requirements: None,
+                evidence_expectations: None,
+                open_questions: None,
+            },
+        );
+    }
 }
 
 fn serialize_contract_run_status(state: &ContractRunState) -> CorridorRunStatusResponse {
@@ -1356,6 +1431,18 @@ fn connector_metadata_for_current_step(
         connector_id,
         endpoint_ref: connector
             .get("endpoint_ref")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        connector_ref: connector
+            .get("connector_ref")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        provider: connector
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        operation: connector
+            .get("operation")
             .and_then(|value| value.as_str())
             .map(|value| value.to_string()),
         method: connector
@@ -1461,10 +1548,19 @@ fn contract_run_scope_admission(
     )
 }
 
+fn provider_connector_target_for_ref<'a>(
+    registry: &'a [ProviderConnectorRegistryEntry],
+    connector_ref: Option<&str>,
+) -> Option<&'a ProviderConnectorRegistryEntry> {
+    let connector_ref = connector_ref?;
+    registry.iter().find(|entry| entry.connector_ref == connector_ref)
+}
+
 fn build_current_operation_admission(
     run_state: &ContractRunState,
     admitted_contract: Option<&AdmittedContract>,
     verifier: &dyn AuthVerifier,
+    provider_connector_registry: &[ProviderConnectorRegistryEntry],
 ) -> OperationAdmission {
     if admitted_contract.is_none() {
         return OperationAdmission {
@@ -1609,12 +1705,19 @@ fn build_current_operation_admission(
         connector_metadata_for_current_step(admitted_contract, &run_state.current_step_id).ok().flatten();
     let (connector_id, endpoint_ref, method, reason_code, constraints) =
         if let Some(metadata) = connector_metadata {
+            let provider_target = provider_connector_target_for_ref(
+                provider_connector_registry,
+                metadata.connector_ref.as_deref(),
+            );
             (
                 Some(metadata.connector_id),
                 metadata.endpoint_ref,
-                metadata.method,
+                metadata.method.or_else(|| Some("POST".to_string())),
                 "NEXT_OPERATION_ALLOWED".to_string(),
                 json!({
+                    "connector_ref": metadata.connector_ref,
+                    "provider": provider_target.map(|value| value.provider.clone()).or(metadata.provider),
+                    "operation": provider_target.map(|value| value.operation.clone()).or(metadata.operation),
                     "side_effect_intent": metadata.side_effect_intent.map(|value| serde_json::to_value(value).unwrap_or(Value::Null)).unwrap_or(Value::Null)
                 }),
             )
@@ -1662,12 +1765,33 @@ fn build_current_operation_admission(
 }
 
 fn contains_forbidden_connector_override(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    ["connector_id", "endpoint_ref", "method", "target_url", "side_effect_intent"]
-        .iter()
-        .any(|key| object.contains_key(*key))
+    match value {
+        Value::Object(object) => {
+            const FORBIDDEN_KEYS: &[&str] = &[
+                "connector_id",
+                "connector_ref",
+                "endpoint_ref",
+                "method",
+                "provider",
+                "operation",
+                "provider_url",
+                "telegram_url",
+                "target_url",
+                "side_effect_intent",
+                "bot_token",
+                "token",
+                "chat_id",
+                "secret_ref",
+                "secret_refs",
+                "token_secret_ref",
+                "chat_id_secret_ref",
+            ];
+            object.keys().any(|key| FORBIDDEN_KEYS.contains(&key.as_str()))
+                || object.values().any(contains_forbidden_connector_override)
+        }
+        Value::Array(items) => items.iter().any(contains_forbidden_connector_override),
+        _ => false,
+    }
 }
 
 fn set_step_status(run_state: &mut ContractRunState, step_id: &str, status: ContractStepStatus) {
@@ -1904,6 +2028,7 @@ async fn post_contract_run_start(
         &run_state,
         Some(&admitted_contract),
         state.auth_verifier.as_ref(),
+        &state.provider_connector_registry,
     );
     run_state.last_admission = Some(admission);
     run_state.observation_count = append_contract_run_observation(
@@ -1992,6 +2117,7 @@ async fn get_contract_run_next(
         run_state,
         admitted_contract.as_ref(),
         state.auth_verifier.as_ref(),
+        &state.provider_connector_registry,
     );
     run_state.last_admission = Some(admission.clone());
     let step = current_contract_step(run_state).expect("current step must exist");
@@ -2101,7 +2227,22 @@ async fn post_contract_run_step_execute(
         )
             .into_response();
     }
-    if payload.get("connector_id").is_some() || payload.get("endpoint_ref").is_some() || payload.get("method").is_some() {
+    if payload.get("connector_id").is_some()
+        || payload.get("connector_ref").is_some()
+        || payload.get("endpoint_ref").is_some()
+        || payload.get("method").is_some()
+        || payload.get("provider").is_some()
+        || payload.get("provider_url").is_some()
+        || payload.get("telegram_url").is_some()
+        || payload.get("target_url").is_some()
+        || payload.get("bot_token").is_some()
+        || payload.get("token").is_some()
+        || payload.get("chat_id").is_some()
+        || payload.get("secret_ref").is_some()
+        || payload.get("secret_refs").is_some()
+        || payload.get("token_secret_ref").is_some()
+        || payload.get("chat_id_secret_ref").is_some()
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -2116,7 +2257,7 @@ async fn post_contract_run_step_execute(
         )
             .into_response();
     }
-    if payload.get("target_url").is_some() || payload.get("side_effect_intent").is_some() {
+    if payload.get("operation").is_some() || payload.get("side_effect_intent").is_some() {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -2165,6 +2306,7 @@ async fn post_contract_run_step_execute(
         &run_state,
         Some(admitted_contract_ref),
         state.auth_verifier.as_ref(),
+        &state.provider_connector_registry,
     );
     if admission.decision != AdmissionDecision::Allow {
         return (
@@ -2231,15 +2373,42 @@ async fn post_contract_run_step_execute(
             .clone()
             .unwrap_or_else(|| "POST".to_string());
         let endpoint_ref = admission.allowed_endpoint_ref.clone();
+        let connector_ref = admission
+            .constraints
+            .get("connector_ref")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let provider = admission
+            .constraints
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let provider_operation = admission
+            .constraints
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
         let auth_context = serde_json::to_value(&run_state.auth_context).unwrap_or_else(|_| json!({}));
+        let input_payload = payload.get("input_payload").cloned().unwrap_or_else(|| json!({}));
         let connector_request = ConnectorExecutionRequest {
             connector_id: connector_id.clone(),
             call_id: format!("call_{}_{}", run_state.run_id, operation_id),
             side_effect_intent,
             request: redact_json(&json!({
                 "endpoint_ref": endpoint_ref,
+                "connector_ref": connector_ref.clone(),
+                "provider": provider.clone(),
+                "operation": provider_operation.clone(),
                 "method": method,
-                "body": payload.get("input_payload").cloned().unwrap_or_else(|| json!({})),
+                "body": input_payload,
+                "text": payload
+                    .get("input_payload")
+                    .and_then(|value| value.get("text"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("MOVA contract-run notification"),
+                "operation_id": operation_id,
                 "run_id": run_state.run_id,
                 "correlation_id": payload
                     .get("correlation")
@@ -2258,18 +2427,32 @@ async fn post_contract_run_step_execute(
             Ok(value) => value,
             Err(err) => return connector_unavailable(&err).into_response(),
         };
-        json!({
+        let response = connector_result.call.response.clone();
+        let mut summary = json!({
             "connector_id": connector_id,
             "endpoint_ref": endpoint_ref,
             "method": method,
             "side_effect_intent": side_effect_intent,
             "connector_status": connector_result.call.status,
-            "provider": connector_result.call.response.get("provider").cloned().unwrap_or_else(|| json!("unknown")),
-            "connector_mode": connector_result.call.response.get("connector_mode").cloned().unwrap_or_else(|| json!("unknown")),
-            "response_preview": connector_result.call.response.get("response_preview").cloned().unwrap_or_else(|| json!({})),
-            "attempts": connector_result.call.response.get("attempts").cloned().unwrap_or_else(|| json!(1)),
-            "timeout_ms": connector_result.call.response.get("timeout_ms").cloned().unwrap_or_else(|| json!(0))
-        })
+            "provider": response.get("provider").cloned().unwrap_or_else(|| json!("unknown")),
+            "connector_mode": response.get("connector_mode").cloned().unwrap_or_else(|| json!("unknown")),
+            "response_preview": response.get("response_preview").cloned().unwrap_or_else(|| json!({})),
+            "attempts": response.get("attempts").cloned().unwrap_or_else(|| json!(1)),
+            "timeout_ms": response.get("timeout_ms").cloned().unwrap_or_else(|| json!(0))
+        });
+        if let Some(ref_value) = response.get("connector_ref").cloned().or_else(|| connector_ref.map(|value| json!(value))) {
+            summary["connector_ref"] = ref_value;
+        }
+        if let Some(operation_value) = response.get("operation").cloned().or_else(|| {
+            if provider_operation.is_empty() {
+                None
+            } else {
+                Some(json!(provider_operation))
+            }
+        }) {
+            summary["operation"] = operation_value;
+        }
+        summary
     } else {
         json!({
             "provider": "human_gate_resolution",

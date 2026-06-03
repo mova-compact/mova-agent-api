@@ -42,6 +42,18 @@ fn execute_body(operation_id: &str) -> String {
     .to_string()
 }
 
+fn provider_execute_body(operation_id: &str, text: &str) -> String {
+    json!({
+        "operation_id": operation_id,
+        "input_payload": {"text": text},
+        "correlation": {
+            "trace_id": "trace_contract_001",
+            "correlation_id": "corr_contract_001"
+        }
+    })
+    .to_string()
+}
+
 fn resolve_body(decision: &str) -> String {
     json!({
         "decision": decision,
@@ -289,6 +301,185 @@ async fn contract_run_corridor_uses_contract_run_endpoint_scope() {
         "webhook_site_contract_run_test"
     );
     assert_eq!(admission["allowed_method"], "POST");
+}
+
+#[tokio::test]
+async fn provider_connector_contract_admission_resolves_registry_constraints() {
+    let app = router();
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start_json["current_step_id"], "send_owner_report");
+    assert_eq!(start_json["next_allowed_operation_id"], "op_send_owner_report");
+
+    let next = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/next"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.status(), StatusCode::OK);
+    let next_body = to_bytes(next.into_body(), usize::MAX).await.unwrap();
+    let next_json: Value = serde_json::from_slice(&next_body).unwrap();
+    let admission = &next_json["operation_admission"];
+    assert_eq!(admission["allowed_connector_id"], "provider.connector.v1");
+    assert!(admission["allowed_endpoint_ref"].is_null());
+    assert_eq!(admission["allowed_method"], "POST");
+    assert_eq!(
+        admission["constraints"]["connector_ref"],
+        "telegram.owner_report_channel"
+    );
+    assert_eq!(admission["constraints"]["provider"], "telegram");
+    assert_eq!(admission["constraints"]["operation"], "send_message");
+    assert_eq!(
+        admission["constraints"]["side_effect_intent"],
+        "external_network"
+    );
+}
+
+#[tokio::test]
+async fn provider_connector_contract_denies_nested_secret_and_connector_override() {
+    let app = router();
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/contract-runs/{run_id}/steps/send_owner_report/execute"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "operation_id": "op_send_owner_report",
+                        "input_payload": {
+                            "text": "Owner report",
+                            "chat_id": "evil",
+                            "bot_token": "evil",
+                            "connector_ref": "evil",
+                            "provider_url": "https://evil.example"
+                        },
+                        "correlation": {
+                            "trace_id": "trace_contract_001",
+                            "correlation_id": "corr_contract_001"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "connector_override_forbidden");
+}
+
+#[tokio::test]
+async fn provider_connector_contract_executes_with_fake_adapter_and_redacted_evidence() {
+    let app = router();
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap();
+
+    let execute = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/contract-runs/{run_id}/steps/send_owner_report/execute"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(provider_execute_body(
+                    "op_send_owner_report",
+                    "Owner report: revenue 1234 EUR",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::ACCEPTED);
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/evidence"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(evidence_json["contract_id"], "provider_connector_owner_report_v0");
+    assert_eq!(evidence_json["status"], "completed");
+    let connector_summary = &evidence_json["evidence"]["steps"][0]["connector_summary"];
+    assert_eq!(connector_summary["connector_id"], "provider.connector.v1");
+    assert!(connector_summary["endpoint_ref"].is_null());
+    assert_eq!(connector_summary["method"], "POST");
+    assert_eq!(connector_summary["provider"], "telegram");
+    assert_eq!(connector_summary["connector_ref"], "telegram.owner_report_channel");
+    assert_eq!(connector_summary["operation"], "send_message");
+    assert_eq!(connector_summary["connector_mode"], "deterministic_fake_provider_connector");
+    assert_eq!(connector_summary["response_preview"]["ok"], true);
+    assert_eq!(connector_summary["response_preview"]["message_id"], 1001);
+    let serialized = evidence_json.to_string();
+    assert!(!serialized.contains("chat_id"));
+    assert!(!serialized.contains("bot_token"));
+    assert!(!serialized.contains("TELEGRAM_BOT_TOKEN"));
+    assert!(!serialized.contains("api.telegram.org"));
 }
 
 #[tokio::test]

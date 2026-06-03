@@ -100,3 +100,29 @@ Notes:
   - `PASS_WITH_WARNINGS`
   - route + scope parity fixed
   - full gate/evidence progression is currently blocked by upstream webhook `404`, not by endpoint scope policy
+
+## Provider connector proxy registry
+- branch: `fix/cloudflare-contract-run-route-parity`
+- commit: `feat: add provider connector proxy registry`
+- registry env: `MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON`
+- first provider adapter:
+  - provider: `telegram`
+  - operation: `send_message`
+  - status: `first_adapter`
+- contract id: `provider_connector_owner_report_v0`
+- secret status: `no`
+- deploy version: `355e586f-2bd0-4eba-abe1-5d6aeb897dbc`
+- live smoke:
+  - `POST /contracts/provider_connector_owner_report_v0/runs` -> `202`
+  - `GET /contract-runs/{run_id}/next` -> `200`
+  - `allowed_connector_id=provider.connector.v1`
+  - `constraints.connector_ref=telegram.owner_report_channel`
+  - `constraints.provider=telegram`
+  - `constraints.operation=send_message`
+  - `POST /contract-runs/{run_id}/steps/send_owner_report/execute` -> `503`
+  - error wrapper: `connector_execution_failed`
+  - connector detail: `connector_secret_missing`
+- verdict:
+  - `PASS_WITH_WARNINGS`
+  - provider connector registry is wired through contract-run corridor and Worker deploy surface
+  - Telegram delivery is blocked only by missing Worker secrets, not by route, scope, or provider-dispatch mismatch

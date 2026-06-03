@@ -45,6 +45,25 @@
       "enabled": true
     }
   ],
+  "provider_connector_registry": [
+    {
+      "connector_ref": "telegram.owner_report_channel",
+      "provider": "telegram",
+      "operation": "send_message",
+      "required_scopes": [
+        "contracts.run"
+      ],
+      "allowed_operations": [
+        "op_send_owner_report"
+      ],
+      "secret_refs": {
+        "bot_token": "TELEGRAM_BOT_TOKEN",
+        "chat_id": "TELEGRAM_OWNER_REPORT_CHAT_ID"
+      },
+      "evidence_policy": "summary_only",
+      "enabled": true
+    }
+  ],
   "timeout_ms": 10000,
   "max_retries": 0
 }

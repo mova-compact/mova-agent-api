@@ -1,68 +1,53 @@
 {
-  "run_id": "contract_run_req_contract_001",
-  "contract_id": "daily_owner_report_v0",
+  "run_id": "contract_run_req_provider_001",
+  "contract_id": "provider_connector_owner_report_v0",
   "status": "completed",
   "result": {},
   "evidence": {
     "steps": [
       {
-        "step_id": "step_001",
-        "operation_id": "op_notify_webhook",
+        "step_id": "send_owner_report",
+        "operation_id": "op_send_owner_report",
         "decision": "allow",
         "reason_code": "OPERATION_ALLOWED",
         "admission": {
           "decision": "allow",
           "reason_code": "OPERATION_ALLOWED",
-          "allowed_connector_id": "connector.http.generic.v1",
-          "allowed_endpoint_ref": "webhook_site_contract_run_test",
+          "allowed_connector_id": "provider.connector.v1",
+          "allowed_endpoint_ref": null,
           "allowed_method": "POST"
         },
         "connector_summary": {
-          "connector_id": "connector.http.generic.v1",
-          "endpoint_ref": "webhook_site_contract_run_test",
+          "connector_id": "provider.connector.v1",
+          "endpoint_ref": null,
+          "connector_ref": "telegram.owner_report_channel",
+          "operation": "send_message",
           "method": "POST",
           "side_effect_intent": "external_network",
           "connector_status": "completed",
-          "provider": "deterministic_local_http_generic",
-          "connector_mode": "deterministic_local_http_generic",
+          "provider": "telegram",
+          "connector_mode": "deterministic_fake_provider_connector",
           "response_preview": {
-            "message": "contract-run smoke"
+            "ok": true,
+            "message_id": 1001
           },
           "attempts": 1,
           "timeout_ms": 10000
         }
       }
     ],
-    "gates": [
-      {
-        "gate_id": "gate_contract_run_req_contract_001_step_002",
-        "step_id": "step_002",
-        "requested_operation_id": "op_send_report",
-        "decision": "approve",
-        "decided_by": "user_001",
-        "reason_code": "HUMAN_GATE_APPROVED"
-      }
-    ],
+    "gates": [],
     "transitions": [
       {
-        "from_step_id": "step_001",
+        "from_step_id": "send_owner_report",
         "outcome": "default",
-        "kind": "next_step",
-        "target_step_id": "step_002",
-        "terminal_status": null,
-        "reason_code": "TRANSITION_APPLIED"
-      },
-      {
-        "from_step_id": "step_002",
-        "outcome": "approve",
-        "kind": "next_step",
-        "target_step_id": "step_003",
-        "terminal_status": null,
-        "reason_code": "TRANSITION_APPLIED"
+        "kind": "terminal",
+        "target_step_id": null,
+        "terminal_status": "completed",
+        "reason_code": "COMPLETED"
       }
     ],
-    "transition_failures": [
-    ]
+    "transition_failures": []
   },
   "trace_ref": "trace_contract_001",
   "observation_refs": [],

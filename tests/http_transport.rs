@@ -133,6 +133,16 @@ async fn get_capabilities_returns_v0_metadata() {
             "evidence_response"
         ])
     );
+    assert_eq!(json["contract_run"]["supported"], true);
+    assert_eq!(json["provider_connectors"]["supported"], true);
+    assert_eq!(
+        json["provider_connectors"]["registry_env"],
+        "MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON"
+    );
+    assert_eq!(
+        json["provider_connectors"]["providers"][0]["provider"],
+        "telegram"
+    );
 }
 
 #[tokio::test]

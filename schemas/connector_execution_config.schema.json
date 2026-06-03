@@ -12,6 +12,7 @@
     "offline_stub_rules",
     "allowed_webhook_urls",
     "endpoint_registry",
+    "provider_connector_registry",
     "timeout_ms",
     "max_retries"
   ],
@@ -148,6 +149,86 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 3
+          },
+          "evidence_policy": {
+            "type": "string",
+            "enum": [
+              "summary_only",
+              "headers_redacted",
+              "body_redacted",
+              "status_only"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "provider_connector_registry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_ref",
+          "provider",
+          "operation",
+          "required_scopes",
+          "allowed_operations",
+          "secret_refs",
+          "evidence_policy",
+          "enabled"
+        ],
+        "properties": {
+          "connector_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "allowed_operations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "secret_refs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": [
+              "bot_token",
+              "chat_id"
+            ],
+            "properties": {
+              "bot_token": {
+                "type": "string",
+                "minLength": 1
+              },
+              "chat_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
           },
           "evidence_policy": {
             "type": "string",

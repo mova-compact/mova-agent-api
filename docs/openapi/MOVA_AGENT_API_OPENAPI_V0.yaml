@@ -39,6 +39,7 @@ paths:
                   - execution_path
                   - runtime_provider
                   - contract_run
+                  - provider_connectors
                 properties:
                   action_types:
                     type: array
@@ -72,6 +73,36 @@ paths:
                         type: boolean
                       supports_terminal_evidence:
                         type: boolean
+                  provider_connectors:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - supported
+                      - registry_env
+                      - providers
+                    properties:
+                      supported:
+                        type: boolean
+                      registry_env:
+                        type: string
+                      providers:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                            - provider
+                            - operations
+                            - status
+                          properties:
+                            provider:
+                              type: string
+                            operations:
+                              type: array
+                              items:
+                                type: string
+                            status:
+                              type: string
   /actions/validate:
     post:
       summary: Validate action request envelope without execution
@@ -456,7 +487,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
-          description: Storage unavailable
+          description: Storage unavailable or connector secret unavailable
           content:
             application/json:
               schema:
@@ -1245,6 +1276,48 @@ components:
                           side_effect_intent:
                             type: string
                             description: Contract-run validation allows `none`, `local_only`, `external_network`; `destructive` is rejected.
+                          connector_status:
+                            type: string
+                          provider:
+                            type: string
+                          connector_mode:
+                            type: string
+                          response_preview:
+                            type: object
+                          attempts:
+                            type: integer
+                          timeout_ms:
+                            type: integer
+                      - type: object
+                        additionalProperties: false
+                        required:
+                          - connector_id
+                          - endpoint_ref
+                          - connector_ref
+                          - operation
+                          - method
+                          - side_effect_intent
+                          - connector_status
+                          - provider
+                          - connector_mode
+                          - response_preview
+                          - attempts
+                          - timeout_ms
+                        properties:
+                          connector_id:
+                            type: string
+                          endpoint_ref:
+                            type: string
+                            nullable: true
+                          connector_ref:
+                            type: string
+                          operation:
+                            type: string
+                          method:
+                            type: string
+                          side_effect_intent:
+                            type: string
+                            description: Provider connector corridor V0 currently supports `external_network`; Telegram `send_message` is the first provider adapter behind registry resolution.
                           connector_status:
                             type: string
                           provider:

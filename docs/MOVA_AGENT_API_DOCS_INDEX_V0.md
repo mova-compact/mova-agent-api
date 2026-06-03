@@ -16,6 +16,8 @@
   - proof that contract-run corridor hardening closes remaining V0 boundary leaks.
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
   - invariant list for controlled execution without bypass paths.
+- `docs/MOVA_AGENT_API_PROVIDER_CONNECTOR_PROXY_V0.md`
+  - provider connector registry + provider adapter boundary, with Telegram as first adapter.
 - `schemas/*.schema.json`
   - payload/contract validation source.
 - `examples/*.json`
@@ -47,6 +49,7 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `docs/MOVA_AGENT_API_FLOW_TRANSITION_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_PRODUCTION_HARDENING_PROOF_V0.md`
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
+- `docs/MOVA_AGENT_API_PROVIDER_CONNECTOR_PROXY_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_PRODUCTION_AUTH_CONTRACT_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_VERIFIER_ADAPTER_CONTRACT_V0.md`
@@ -64,6 +67,7 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `cargo build --target wasm32-unknown-unknown --features worker`
 - `npm run smoke:public`
 - `powershell -ExecutionPolicy Bypass -File scripts/smoke_contract_run_api.ps1`
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke_provider_connector_contract_run_api.ps1`
 
 ## Mapping for known issue classes
 

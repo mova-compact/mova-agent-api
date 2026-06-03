@@ -77,6 +77,38 @@
                   {
                     "type": "object",
                     "additionalProperties": false,
+                    "required": [
+                      "connector_id",
+                      "endpoint_ref",
+                      "connector_ref",
+                      "operation",
+                      "method",
+                      "side_effect_intent",
+                      "connector_status",
+                      "provider",
+                      "connector_mode",
+                      "response_preview",
+                      "attempts",
+                      "timeout_ms"
+                    ],
+                    "properties": {
+                      "connector_id": { "type": "string" },
+                      "endpoint_ref": { "type": ["string", "null"] },
+                      "connector_ref": { "type": "string" },
+                      "operation": { "type": "string" },
+                      "method": { "type": "string" },
+                      "side_effect_intent": { "type": "string" },
+                      "connector_status": { "type": "string" },
+                      "provider": { "type": "string" },
+                      "connector_mode": { "type": "string" },
+                      "response_preview": { "type": "object" },
+                      "attempts": { "type": "integer" },
+                      "timeout_ms": { "type": "integer" }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
                     "required": ["provider", "decision_basis"],
                     "properties": {
                       "provider": { "type": "string" },

@@ -17,7 +17,7 @@
 13. Connector never owns authorization.
 14. Policy never becomes planner/orchestrator.
 15. Contract-run state never becomes autonomous agent logic.
-16. Agent never submits `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent` for contract-run execution.
+16. Agent never submits `connector_id`, `connector_ref`, `endpoint_ref`, `method`, `provider`, `operation`, `target_url`, or `side_effect_intent` for contract-run execution.
 17. Connector execution request is built only from `OperationAdmission` and contract step metadata.
 18. Every allowed `connector_action` has `contract_run.operation_admitted` observation before side effect.
 19. Every `connector_action` evidence includes connector summary and admission summary.
@@ -35,7 +35,11 @@
 31. `destructive` side-effect intent remains forbidden in contract-run corridor V0.
 32. Contract-run connector execution never borrows `actions.run` scope from flat `/actions/run`.
 33. Endpoint scope policy remains corridor-specific: `webhook_site_test` -> `actions.run`, `webhook_site_contract_run_test` -> `contracts.run`.
+34. Provider connector secrets are resolved only inside runtime secret boundary.
+35. Agent never submits `bot_token`, `token`, `chat_id`, `secret_ref`, `secret_refs`, `token_secret_ref`, `chat_id_secret_ref`, `provider_url`, or `telegram_url`.
+36. `connector_ref` resolves only from provider connector registry, never from client override.
+37. Telegram is only the first provider adapter behind provider connector proxy; contract-run runtime does not own a Telegram special case.
 
 ## Known V0 limitation
 
-Contract-run corridor in V0 uses fixture/static contract definitions. It does not yet load arbitrary MOVA contract packages from external stores.
+Contract-run corridor in V0 uses fixture/static contract definitions. It does not yet load arbitrary MOVA contract packages from external stores, and provider connector registry currently ships only the first adapter set.

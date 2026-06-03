@@ -15,19 +15,37 @@
 - No dynamic routing.
 - No arbitrary connector discovery.
 - No raw URL execution.
-- No production connector SDK integrations.
+- No client-selected provider connectors or secret-bound targets.
 
 ## Real guarded connector execution
 
 Contract-run step execution no longer fabricates connector results for `connector_action` steps.
 For `connector_action` steps, execution builds `ConnectorExecutionRequest` from `OperationAdmission` and contract step metadata only.
-Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent`.
+Client payload cannot override `connector_id`, `connector_ref`, `endpoint_ref`, `method`, `provider`, `operation`, `target_url`, or `side_effect_intent`.
 `/actions/run` and contract-run corridor use separate endpoint policy scopes:
 - `webhook_site_test` -> `actions.run`
 - `webhook_site_contract_run_test` -> `contracts.run`
 Contract-run fixture `daily_owner_report_v0` uses `webhook_site_contract_run_test`.
 Contract-run `connector_action` V0 allows `side_effect_intent`: `none`, `local_only`, `external_network`.
 `destructive` remains denied.
+
+## Provider connector proxy registry
+
+Contract-run corridor now also supports controlled provider connectors through registry resolution:
+- contract step uses `connector.name = provider.connector.v1`
+- contract step references only `connector_ref`
+- runtime resolves `connector_ref` via `MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON`
+- provider dispatcher calls the provider adapter inside connector layer
+- public evidence stays summary-only
+
+Telegram `send_message` is the first provider adapter behind this registry.
+It is not a contract-run runtime special case and it is not the connector architecture itself.
+
+Built-in demo contract:
+- `provider_connector_owner_report_v0`
+
+Built-in registry demo target:
+- `telegram.owner_report_channel` -> provider `telegram`, operation `send_message`, scope `contracts.run`
 
 ## Flow-driven transitions
 
@@ -57,5 +75,5 @@ PASS_WITH_WARNINGS
 - No remote contract package loading.
 - No scheduler.
 - No marketplace.
-- No arbitrary provider connectors.
-- Production provider SDK integrations remain forbidden.
+- No arbitrary provider connectors from client payload.
+- Provider adapters remain controlled runtime integrations only.

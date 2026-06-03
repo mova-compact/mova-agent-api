@@ -210,22 +210,47 @@ fn validate_connector_metadata(admitted_contract: &AdmittedContract) -> Result<(
                 format!("connector_action step {} missing connector.name", step.id),
             ));
         }
-        let endpoint_ref = connector
-            .get("endpoint_ref")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        if endpoint_ref.trim().is_empty() {
-            return Err(ContractRunDomainError::new(
-                "contract_connector_metadata_missing",
-                format!("connector_action step {} missing connector.endpoint_ref", step.id),
-            ));
+        if connector_name == "provider.connector.v1" {
+            let connector_ref = connector
+                .get("connector_ref")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if connector_ref.trim().is_empty() {
+                return Err(ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!("connector_action step {} missing connector.connector_ref", step.id),
+                ));
+            }
+        } else {
+            let endpoint_ref = connector
+                .get("endpoint_ref")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if endpoint_ref.trim().is_empty() {
+                return Err(ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!("connector_action step {} missing connector.endpoint_ref", step.id),
+                ));
+            }
+            let method = connector.get("method").and_then(|value| value.as_str()).unwrap_or_default();
+            if method.trim().is_empty() {
+                return Err(ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!("connector_action step {} missing connector.method", step.id),
+                ));
+            }
         }
-        let method = connector.get("method").and_then(|value| value.as_str()).unwrap_or_default();
-        if method.trim().is_empty() {
-            return Err(ContractRunDomainError::new(
-                "contract_connector_metadata_missing",
-                format!("connector_action step {} missing connector.method", step.id),
-            ));
+        if connector_name == "provider.connector.v1" {
+            let operation = connector
+                .get("operation")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if operation.trim().is_empty() {
+                return Err(ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!("connector_action step {} missing connector.operation", step.id),
+                ));
+            }
         }
         let side_effect_intent = connector
             .get("side_effect_intent")

@@ -1,13 +1,15 @@
 use mova_agent_api::connectors::{
     create_connector_executor, ConnectorCallStatus, ConnectorExecutionConfig, ConnectorExecutionError,
-    ConnectorExecutionRequest, ConnectorExecutor, EndpointEvidencePolicy, EndpointRegistryEntry, GenericHttpClient,
-    GenericHttpConnectorExecutor, GenericHttpRequest, OfflineStubRule, SideEffectIntent, WebhookHttpClient,
+    ConnectorExecutionRequest, ConnectorExecutor, ConnectorSecretResolver, EndpointEvidencePolicy,
+    EndpointRegistryEntry, GenericHttpClient, GenericHttpConnectorExecutor, GenericHttpRequest,
+    OfflineStubRule, ProviderConnectorRegistryEntry, SideEffectIntent, WebhookHttpClient,
     WebhookHttpResult, WebhookSiteConnectorExecutor,
 };
 use mova_agent_api::policy::{AdmissionDecision, PolicySummary};
 use mova_agent_api::secrets::{SecretRef, SecretRefKind};
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -75,6 +77,7 @@ async fn offline_stub_returns_rule_driven_result() {
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
         endpoint_registry: vec![],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![OfflineStubRule {
@@ -99,6 +102,7 @@ async fn invalid_config_maps_to_deterministic_failure() {
         allowed_side_effect_intents: vec![],
         allowed_webhook_urls: vec![],
         endpoint_registry: vec![],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![],
@@ -137,6 +141,7 @@ async fn webhook_site_allows_only_allowlisted_target() {
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -187,6 +192,7 @@ async fn webhook_site_denies_non_allowlisted_target() {
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -233,6 +239,7 @@ async fn webhook_site_maps_provider_http_failure() {
         offline_stub_rules: vec![],
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -332,8 +339,94 @@ fn generic_cfg() -> ConnectorExecutionConfig {
             evidence_policy: EndpointEvidencePolicy::SummaryOnly,
             enabled: true,
         }],
+        provider_connector_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
+    }
+}
+
+fn provider_registry_entry(enabled: bool) -> ProviderConnectorRegistryEntry {
+    ProviderConnectorRegistryEntry {
+        connector_ref: "telegram.owner_report_channel".to_string(),
+        provider: "telegram".to_string(),
+        operation: "send_message".to_string(),
+        required_scopes: vec!["contracts.run".to_string()],
+        allowed_operations: vec!["op_send_owner_report".to_string()],
+        secret_refs: HashMap::from([
+            ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
+            (
+                "chat_id".to_string(),
+                "TELEGRAM_OWNER_REPORT_CHAT_ID".to_string(),
+            ),
+        ]),
+        evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+        enabled,
+    }
+}
+
+fn deterministic_provider_cfg() -> ConnectorExecutionConfig {
+    let mut cfg = ConnectorExecutionConfig::deterministic_local_default();
+    if !cfg
+        .allowed_side_effect_intents
+        .contains(&SideEffectIntent::ExternalNetwork)
+    {
+        cfg.allowed_side_effect_intents
+            .push(SideEffectIntent::ExternalNetwork);
+    }
+    cfg.provider_connector_registry = vec![provider_registry_entry(true)];
+    cfg
+}
+
+fn provider_http_cfg() -> ConnectorExecutionConfig {
+    ConnectorExecutionConfig {
+        adapter_kind: "http_generic".to_string(),
+        allowed_connectors: vec!["provider.connector.v1".to_string()],
+        allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        offline_stub_rules: vec![],
+        allowed_webhook_urls: vec![],
+        endpoint_registry: vec![],
+        provider_connector_registry: vec![provider_registry_entry(true)],
+        timeout_ms: 10_000,
+        max_retries: 0,
+    }
+}
+
+fn provider_request_payload(connector_ref: &str, operation_id: &str) -> serde_json::Value {
+    json!({
+        "connector_ref": connector_ref,
+        "provider": "telegram",
+        "operation": "send_message",
+        "operation_id": operation_id,
+        "text": "Owner report: revenue 1234 EUR"
+    })
+}
+
+#[derive(Clone)]
+struct StaticSecretResolver {
+    secrets: HashMap<String, String>,
+}
+
+impl ConnectorSecretResolver for StaticSecretResolver {
+    fn resolve(&self, secret_ref: &str) -> Result<Option<String>, ConnectorExecutionError> {
+        Ok(self.secrets.get(secret_ref).cloned())
+    }
+}
+
+#[derive(Clone)]
+struct CapturingHttpClient {
+    result: Result<WebhookHttpResult, ConnectorExecutionError>,
+    last_request: Arc<Mutex<Option<GenericHttpRequest>>>,
+}
+
+#[cfg_attr(all(feature = "cloudflare_worker", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(all(feature = "cloudflare_worker", target_arch = "wasm32")), async_trait)]
+impl GenericHttpClient for CapturingHttpClient {
+    async fn execute(
+        &self,
+        request: GenericHttpRequest,
+    ) -> Result<WebhookHttpResult, ConnectorExecutionError> {
+        *self.last_request.lock().unwrap() = Some(request);
+        self.result.clone()
     }
 }
 
@@ -652,4 +745,233 @@ async fn generic_http_denies_disallowed_intent_for_endpoint() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "endpoint_intent_denied");
+}
+
+#[tokio::test]
+async fn provider_connector_registry_resolves_and_completes_fake_execution() {
+    let cfg = deterministic_provider_cfg();
+    let exec = create_connector_executor(&cfg);
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_01".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.call.status, ConnectorCallStatus::Completed);
+    assert_eq!(result.call.response["provider"], "telegram");
+    assert_eq!(
+        result.call.response["connector_ref"],
+        "telegram.owner_report_channel"
+    );
+    assert_eq!(result.call.response["operation"], "send_message");
+    assert_eq!(result.call.response["response_preview"]["message_id"], 1001);
+    let serialized = result.call.response.to_string();
+    assert!(!serialized.contains("TELEGRAM_BOT_TOKEN"));
+    assert!(!serialized.contains("TELEGRAM_OWNER_REPORT_CHAT_ID"));
+    assert!(!serialized.contains("chat_id"));
+    assert!(!serialized.contains("bot_token"));
+}
+
+#[tokio::test]
+async fn provider_connector_registry_denies_unknown_connector_ref() {
+    let cfg = deterministic_provider_cfg();
+    let exec = create_connector_executor(&cfg);
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_02".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.unknown", "op_send_owner_report"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_ref_not_allowed");
+}
+
+#[tokio::test]
+async fn provider_connector_registry_denies_disabled_connector_ref() {
+    let mut cfg = deterministic_provider_cfg();
+    cfg.provider_connector_registry = vec![provider_registry_entry(false)];
+    let exec = create_connector_executor(&cfg);
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_03".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_ref_disabled");
+}
+
+#[tokio::test]
+async fn provider_connector_registry_denies_missing_scope() {
+    let cfg = deterministic_provider_cfg();
+    let exec = create_connector_executor(&cfg);
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_04".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            auth_context: json!({"scopes":["actions.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_scope_denied");
+}
+
+#[tokio::test]
+async fn provider_connector_registry_denies_operation_not_allowlisted() {
+    let cfg = deterministic_provider_cfg();
+    let exec = create_connector_executor(&cfg);
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_05".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_wrong"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_operation_not_allowed");
+}
+
+#[tokio::test]
+async fn provider_connector_proxy_maps_missing_secrets() {
+    let exec = GenericHttpConnectorExecutor::with_secret_resolver(
+        provider_http_cfg(),
+        Arc::new(CapturingHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: r#"{"ok":true,"result":{"message_id":123}}"#.to_string(),
+            }),
+            last_request: Arc::new(Mutex::new(None)),
+        }),
+        Arc::new(StaticSecretResolver {
+            secrets: HashMap::new(),
+        }),
+    );
+    let err = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_06".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "connector_secret_missing");
+}
+
+#[tokio::test]
+async fn provider_connector_proxy_executes_through_first_provider_adapter() {
+    let last_request = Arc::new(Mutex::new(None));
+    let exec = GenericHttpConnectorExecutor::with_secret_resolver(
+        provider_http_cfg(),
+        Arc::new(CapturingHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: r#"{"ok":true,"result":{"message_id":123,"chat":{"id":"secret-chat"}}}"#
+                    .to_string(),
+            }),
+            last_request: Arc::clone(&last_request),
+        }),
+        Arc::new(StaticSecretResolver {
+            secrets: HashMap::from([
+                ("TELEGRAM_BOT_TOKEN".to_string(), "secret-token".to_string()),
+                (
+                    "TELEGRAM_OWNER_REPORT_CHAT_ID".to_string(),
+                    "secret-chat".to_string(),
+                ),
+            ]),
+        }),
+    );
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_07".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    let outbound = last_request.lock().unwrap().clone().unwrap();
+    assert_eq!(outbound.method, "POST");
+    assert!(outbound.url.contains("/botsecret-token/sendMessage"));
+    let outbound_body = outbound.body.unwrap();
+    assert_eq!(outbound_body["chat_id"], "secret-chat");
+    assert_eq!(
+        outbound_body["text"],
+        "Owner report: revenue 1234 EUR"
+    );
+    assert_eq!(result.call.response["provider"], "telegram");
+    assert_eq!(result.call.response["connector_ref"], "telegram.owner_report_channel");
+    assert_eq!(result.call.response["operation"], "send_message");
+    assert_eq!(result.call.response["response_preview"]["ok"], true);
+    assert_eq!(result.call.response["response_preview"]["message_id"], 123);
+    let serialized = result.call.response.to_string();
+    assert!(!serialized.contains("secret-token"));
+    assert!(!serialized.contains("secret-chat"));
+    assert!(!serialized.contains("api.telegram.org"));
+    assert!(result.call.response.get("chat").is_none());
 }

@@ -1,7 +1,10 @@
 //! Runtime configuration boundary for MOVA Agent API V0.
 
 use crate::auth::AuthTrustConfig;
-use crate::connectors::{ConnectorExecutionConfig, EndpointEvidencePolicy, EndpointRegistryEntry, SideEffectIntent};
+use crate::connectors::{
+    ConnectorExecutionConfig, EndpointEvidencePolicy, EndpointRegistryEntry, ProviderConnectorRegistryEntry,
+    SideEffectIntent,
+};
 use crate::secrets::{SecretBoundaryError, SecretRef, SecretRefKind};
 use crate::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
@@ -166,6 +169,15 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
                 cfg.connectors.endpoint_registry = parsed;
             }
         }
+        if let Ok(value) = std::env::var("MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON") {
+            let parsed: Vec<ProviderConnectorRegistryEntry> = serde_json::from_str(&value).map_err(|_| {
+                RuntimeConfigError::new(
+                    "connector_config_invalid",
+                    "MOVA_PROVIDER_CONNECTOR_REGISTRY_JSON must be valid provider connector registry JSON array",
+                )
+            })?;
+            cfg.connectors.provider_connector_registry = parsed;
+        }
         if cfg.connectors.adapter_kind == "webhook_site" {
             if cfg.connectors.allowed_connectors.is_empty() {
                 cfg.connectors.allowed_connectors = vec!["connector.webhook_site.v1".to_string()];
@@ -184,6 +196,16 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
         if cfg.connectors.adapter_kind == "http_generic" {
             if cfg.connectors.allowed_connectors.is_empty() {
                 cfg.connectors.allowed_connectors = vec!["connector.http.generic.v1".to_string()];
+            }
+            if !cfg
+                .connectors
+                .allowed_connectors
+                .iter()
+                .any(|value| value == "provider.connector.v1")
+            {
+                cfg.connectors
+                    .allowed_connectors
+                    .push("provider.connector.v1".to_string());
             }
             if cfg
                 .connectors

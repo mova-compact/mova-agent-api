@@ -99,6 +99,18 @@ pub struct EndpointRegistryEntry {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderConnectorRegistryEntry {
+    pub connector_ref: String,
+    pub provider: String,
+    pub operation: String,
+    pub required_scopes: Vec<String>,
+    pub allowed_operations: Vec<String>,
+    pub secret_refs: HashMap<String, String>,
+    pub evidence_policy: EndpointEvidencePolicy,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointEvidencePolicy {
@@ -116,6 +128,7 @@ pub struct ConnectorExecutionConfig {
     pub offline_stub_rules: Vec<OfflineStubRule>,
     pub allowed_webhook_urls: Vec<String>,
     pub endpoint_registry: Vec<EndpointRegistryEntry>,
+    pub provider_connector_registry: Vec<ProviderConnectorRegistryEntry>,
     pub timeout_ms: u64,
     pub max_retries: u8,
 }
@@ -134,6 +147,7 @@ impl ConnectorExecutionConfig {
             allowed_connectors: vec![
                 "connector.docs.v1".to_string(),
                 "connector.http.generic.v1".to_string(),
+                "provider.connector.v1".to_string(),
             ],
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
@@ -162,6 +176,19 @@ impl ConnectorExecutionConfig {
                     enabled: true,
                 },
             ],
+            provider_connector_registry: vec![ProviderConnectorRegistryEntry {
+                connector_ref: "telegram.owner_report_channel".to_string(),
+                provider: "telegram".to_string(),
+                operation: "send_message".to_string(),
+                required_scopes: vec!["contracts.run".to_string()],
+                allowed_operations: vec!["op_send_owner_report".to_string()],
+                secret_refs: HashMap::from([
+                    ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
+                    ("chat_id".to_string(), "TELEGRAM_OWNER_REPORT_CHAT_ID".to_string()),
+                ]),
+                evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                enabled: true,
+            }],
             timeout_ms: 10_000,
             max_retries: 0,
         }
@@ -286,6 +313,44 @@ impl ConnectorExecutionConfig {
                 }
             }
         }
+        for target in &self.provider_connector_registry {
+            if target.connector_ref.trim().is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "connector_ref must not be empty",
+                ));
+            }
+            if target.provider.trim().is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "provider must not be empty",
+                ));
+            }
+            if target.operation.trim().is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "operation must not be empty",
+                ));
+            }
+            if target.required_scopes.is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "required_scopes must not be empty",
+                ));
+            }
+            if target.allowed_operations.is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "allowed_operations must not be empty",
+                ));
+            }
+            if !target.secret_refs.contains_key("bot_token") || !target.secret_refs.contains_key("chat_id") {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "telegram provider target requires bot_token and chat_id secret refs",
+                ));
+            }
+        }
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
             return Err(ConnectorExecutionError::new(
                 "connector_config_invalid",
@@ -342,6 +407,9 @@ impl ConnectorExecutor for DeterministicLocalConnectorExecutor {
         }
         if request.connector_id == "connector.http.generic.v1" {
             return self.execute_deterministic_http_generic(request).await;
+        }
+        if request.connector_id == "provider.connector.v1" {
+            return self.execute_deterministic_provider_connector(request).await;
         }
         if !self
             .config
@@ -501,6 +569,135 @@ impl DeterministicLocalConnectorExecutor {
             guard_reason: "connector_guard_allow_deterministic_http_generic".to_string(),
         })
     }
+
+    async fn execute_deterministic_provider_connector(
+        &self,
+        request: ConnectorExecutionRequest,
+    ) -> Result<ConnectorExecutionResult, ConnectorExecutionError> {
+        if request.side_effect_intent != SideEffectIntent::ExternalNetwork {
+            return Err(ConnectorExecutionError::new(
+                "connector_side_effect_denied",
+                "provider connector requires external_network side_effect_intent",
+            ));
+        }
+        let connector_ref = request
+            .request
+            .get("connector_ref")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_ref_not_allowed",
+                    "connector_ref is required for provider connector",
+                )
+            })?
+            .to_string();
+        let target = self
+            .config
+            .provider_connector_registry
+            .iter()
+            .find(|entry| entry.connector_ref == connector_ref)
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_ref_not_allowed",
+                    "connector_ref is not configured in provider connector registry",
+                )
+            })?;
+        if !target.enabled {
+            return Err(ConnectorExecutionError::new(
+                "connector_ref_disabled",
+                "connector_ref is disabled",
+            ));
+        }
+        let scopes = auth_scopes_from_context(&request.auth_context);
+        if let Some(required) = target
+            .required_scopes
+            .iter()
+            .find(|required| !scopes.iter().any(|scope| scope == *required))
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_scope_denied",
+                &format!("required scope missing: {required}"),
+            ));
+        }
+        let operation_id = request
+            .request
+            .get("operation_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if !target
+            .allowed_operations
+            .iter()
+            .any(|allowed| allowed == &operation_id)
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_operation_not_allowed",
+                "operation_id is not allowlisted for connector_ref",
+            ));
+        }
+        let provider = request
+            .request
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if provider != target.provider {
+            return Err(ConnectorExecutionError::new(
+                "provider_not_supported",
+                "provider is not supported for connector_ref",
+            ));
+        }
+        let operation = request
+            .request
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if operation != target.operation {
+            return Err(ConnectorExecutionError::new(
+                "provider_operation_not_supported",
+                "provider operation is not supported for connector_ref",
+            ));
+        }
+
+        let request_payload = request.request.clone();
+        let text = request_payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("MOVA contract-run notification")
+            .to_string();
+        let call = ConnectorCall {
+            connector_id: request.connector_id,
+            call_id: request.call_id,
+            side_effect_intent: request.side_effect_intent,
+            request: request_payload,
+            auth_context: request.auth_context,
+            policy_result: request.policy_result,
+            status: ConnectorCallStatus::Completed,
+            response: json!({
+                "connector_mode": "deterministic_fake_provider_connector",
+                "provider": target.provider,
+                "connector_ref": connector_ref,
+                "operation": target.operation,
+                "response_preview": {
+                    "ok": true,
+                    "message_id": 1001,
+                    "text_preview": text
+                },
+                "attempts": 1,
+                "timeout_ms": self.config.timeout_ms
+            }),
+            timing: ConnectorTiming {
+                started_at: request.started_at,
+                finished_at: Some("2026-05-23T10:30:01Z".to_string()),
+                duration_ms: Some(1),
+            },
+        };
+
+        Ok(ConnectorExecutionResult {
+            call,
+            guard_reason: "connector_guard_allow_deterministic_provider_connector".to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -595,6 +792,10 @@ pub trait GenericHttpClient: Send + Sync {
     ) -> Result<WebhookHttpResult, ConnectorExecutionError>;
 }
 
+pub trait ConnectorSecretResolver: Send + Sync {
+    fn resolve(&self, secret_ref: &str) -> Result<Option<String>, ConnectorExecutionError>;
+}
+
 #[derive(Debug, Clone)]
 pub struct DisabledWebhookHttpClient;
 
@@ -627,6 +828,15 @@ impl GenericHttpClient for DisabledWebhookHttpClient {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DisabledConnectorSecretResolver;
+
+impl ConnectorSecretResolver for DisabledConnectorSecretResolver {
+    fn resolve(&self, _secret_ref: &str) -> Result<Option<String>, ConnectorExecutionError> {
+        Ok(None)
+    }
+}
+
 #[derive(Clone)]
 pub struct WebhookSiteConnectorExecutor {
     config: ConnectorExecutionConfig,
@@ -643,11 +853,28 @@ impl WebhookSiteConnectorExecutor {
 pub struct GenericHttpConnectorExecutor {
     config: ConnectorExecutionConfig,
     http_client: Arc<dyn GenericHttpClient>,
+    secret_resolver: Arc<dyn ConnectorSecretResolver>,
 }
 
 impl GenericHttpConnectorExecutor {
     pub fn new(config: ConnectorExecutionConfig, http_client: Arc<dyn GenericHttpClient>) -> Self {
-        Self { config, http_client }
+        Self {
+            config,
+            http_client,
+            secret_resolver: Arc::new(DisabledConnectorSecretResolver),
+        }
+    }
+
+    pub fn with_secret_resolver(
+        config: ConnectorExecutionConfig,
+        http_client: Arc<dyn GenericHttpClient>,
+        secret_resolver: Arc<dyn ConnectorSecretResolver>,
+    ) -> Self {
+        Self {
+            config,
+            http_client,
+            secret_resolver,
+        }
     }
 }
 
@@ -876,8 +1103,11 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
         if request.side_effect_intent != SideEffectIntent::ExternalNetwork {
             return Err(ConnectorExecutionError::new(
                 "connector_side_effect_denied",
-                "http_generic requires external_network side_effect_intent",
+                "connector requires external_network side_effect_intent",
             ));
+        }
+        if request.connector_id == "provider.connector.v1" {
+            return self.execute_provider_connector(request).await;
         }
 
         let endpoint_ref = request
@@ -1032,6 +1262,203 @@ impl ConnectorExecutor for GenericHttpConnectorExecutor {
         Ok(ConnectorExecutionResult {
             call,
             guard_reason: "connector_guard_allow_http_generic".to_string(),
+        })
+    }
+}
+
+impl GenericHttpConnectorExecutor {
+    async fn execute_provider_connector(
+        &self,
+        request: ConnectorExecutionRequest,
+    ) -> Result<ConnectorExecutionResult, ConnectorExecutionError> {
+        let connector_ref = request
+            .request
+            .get("connector_ref")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_ref_not_allowed",
+                    "connector_ref is required for provider connector",
+                )
+            })?
+            .to_string();
+        let target = self
+            .config
+            .provider_connector_registry
+            .iter()
+            .find(|entry| entry.connector_ref == connector_ref)
+            .ok_or_else(|| {
+                ConnectorExecutionError::new(
+                    "connector_ref_not_allowed",
+                    "connector_ref is not configured in provider connector registry",
+                )
+            })?;
+        if !target.enabled {
+            return Err(ConnectorExecutionError::new(
+                "connector_ref_disabled",
+                "connector_ref is disabled",
+            ));
+        }
+        let scopes = auth_scopes_from_context(&request.auth_context);
+        if let Some(required) = target
+            .required_scopes
+            .iter()
+            .find(|required| !scopes.iter().any(|scope| scope == *required))
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_scope_denied",
+                &format!("required scope missing: {required}"),
+            ));
+        }
+        let operation_id = request
+            .request
+            .get("operation_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if !target
+            .allowed_operations
+            .iter()
+            .any(|allowed| allowed == &operation_id)
+        {
+            return Err(ConnectorExecutionError::new(
+                "connector_operation_not_allowed",
+                "operation_id is not allowlisted for connector_ref",
+            ));
+        }
+        let provider = request
+            .request
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if provider != target.provider {
+            return Err(ConnectorExecutionError::new(
+                "provider_not_supported",
+                "provider is not supported for connector_ref",
+            ));
+        }
+        let operation = request
+            .request
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if operation != target.operation {
+            return Err(ConnectorExecutionError::new(
+                "provider_operation_not_supported",
+                "provider operation is not supported for connector_ref",
+            ));
+        }
+        match (provider, operation) {
+            ("telegram", "send_message") => self.execute_telegram_send_message(target, request).await,
+            ("telegram", _) => Err(ConnectorExecutionError::new(
+                "provider_operation_not_supported",
+                "telegram operation is not supported",
+            )),
+            _ => Err(ConnectorExecutionError::new(
+                "provider_not_supported",
+                "provider is not supported",
+            )),
+        }
+    }
+
+    async fn execute_telegram_send_message(
+        &self,
+        target: &ProviderConnectorRegistryEntry,
+        request: ConnectorExecutionRequest,
+    ) -> Result<ConnectorExecutionResult, ConnectorExecutionError> {
+        let token_secret_ref = target
+            .secret_refs
+            .get("bot_token")
+            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "bot_token secret ref is missing"))?;
+        let chat_id_secret_ref = target
+            .secret_refs
+            .get("chat_id")
+            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "chat_id secret ref is missing"))?;
+        let bot_token = self
+            .secret_resolver
+            .resolve(token_secret_ref)?
+            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "required secret missing: TELEGRAM_BOT_TOKEN"))?;
+        let chat_id = self
+            .secret_resolver
+            .resolve(chat_id_secret_ref)?
+            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "required secret missing: TELEGRAM_OWNER_REPORT_CHAT_ID"))?;
+        let text = request
+            .request
+            .get("text")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("MOVA contract-run notification")
+            .to_string();
+        let payload = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+        let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+        let http_result = self
+            .http_client
+            .execute(GenericHttpRequest {
+                method: "POST".to_string(),
+                url,
+                headers: HashMap::new(),
+                body: Some(payload),
+                timeout_ms: self.config.timeout_ms,
+            })
+            .await?;
+        if !(200..300).contains(&http_result.status) {
+            let code = match http_result.status {
+                400 => "connector_provider_request_failed",
+                401 | 403 => "connector_provider_auth_failed",
+                429 => "connector_provider_rate_limited",
+                _ => "connector_provider_http_failed",
+            };
+            return Err(ConnectorExecutionError::new(
+                code,
+                &format!("telegram sendMessage responded with status {}", http_result.status),
+            ));
+        }
+        let parsed = serde_json::from_str::<Value>(&http_result.body_preview).unwrap_or_else(|_| json!({}));
+        let ok = parsed
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let message_id = parsed
+            .get("result")
+            .and_then(|value| value.get("message_id"))
+            .cloned()
+            .unwrap_or_else(|| json!(Value::Null));
+
+        let call = ConnectorCall {
+            connector_id: request.connector_id,
+            call_id: request.call_id,
+            side_effect_intent: request.side_effect_intent,
+            request: request.request,
+            auth_context: request.auth_context,
+            policy_result: request.policy_result,
+            status: ConnectorCallStatus::Completed,
+            response: json!({
+                "connector_mode": "provider_connector_proxy",
+                "provider": target.provider,
+                "connector_ref": target.connector_ref,
+                "operation": target.operation,
+                "response_preview": {
+                    "ok": ok,
+                    "message_id": message_id
+                },
+                "attempts": 1,
+                "timeout_ms": self.config.timeout_ms
+            }),
+            timing: ConnectorTiming {
+                started_at: request.started_at,
+                finished_at: Some("2026-05-23T10:30:01Z".to_string()),
+                duration_ms: Some(1),
+            },
+        };
+
+        Ok(ConnectorExecutionResult {
+            call,
+            guard_reason: "connector_guard_allow_provider_connector".to_string(),
         })
     }
 }
@@ -1219,6 +1646,7 @@ mod tests {
             }],
             allowed_webhook_urls: vec![],
             endpoint_registry: vec![],
+            provider_connector_registry: vec![],
             timeout_ms: 10_000,
             max_retries: 0,
         };
