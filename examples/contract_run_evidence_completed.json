@@ -14,12 +14,12 @@
           "decision": "allow",
           "reason_code": "OPERATION_ALLOWED",
           "allowed_connector_id": "connector.http.generic.v1",
-          "allowed_endpoint_ref": "webhook_site_test",
+          "allowed_endpoint_ref": "webhook_site_contract_run_test",
           "allowed_method": "POST"
         },
         "connector_summary": {
           "connector_id": "connector.http.generic.v1",
-          "endpoint_ref": "webhook_site_test",
+          "endpoint_ref": "webhook_site_contract_run_test",
           "method": "POST",
           "side_effect_intent": "external_network",
           "connector_status": "completed",

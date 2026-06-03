@@ -79,3 +79,24 @@
 Notes:
 - Route parity is fixed at Worker adapter level: contract-run corridor routes no longer return `404` because of missing Worker route match.
 - Local `wrangler dev` smoke could not be completed in this environment because the local Workers runtime binary supports compatibility dates only through `2026-05-01`, while this Worker requires `2026-05-23`.
+
+## Contract-run connector scope policy fix
+- branch: `fix/cloudflare-contract-run-route-parity`
+- commit: `fix: align contract-run connector scope policy`
+- changed endpoint refs:
+  - flat `/actions/run` continues to use `webhook_site_test`
+  - contract-run fixture `daily_owner_report_v0` now uses `webhook_site_contract_run_test`
+- action endpoint scope:
+  - `webhook_site_test` -> `actions.run`
+  - control proof: live `POST /actions/run` with only `contracts.run` returns `403`, `required scope missing: actions.run`
+- contract-run endpoint scope:
+  - `webhook_site_contract_run_test` -> `contracts.run`
+  - live `GET /contract-runs/{run_id}/next` shows `allowed_endpoint_ref=webhook_site_contract_run_test`
+- deploy version: `adcf121a-cb7e-41bf-b47a-95da257e1dc4`
+- live execute result:
+  - `POST /contract-runs/{run_id}/steps/step_001/execute` no longer fails with `endpoint_scope_denied`
+  - current live result is `502`, `connector_provider_http_failed`, `http_generic responded with status 404`
+- full smoke verdict:
+  - `PASS_WITH_WARNINGS`
+  - route + scope parity fixed
+  - full gate/evidence progression is currently blocked by upstream webhook `404`, not by endpoint scope policy

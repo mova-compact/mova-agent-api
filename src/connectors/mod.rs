@@ -138,17 +138,30 @@ impl ConnectorExecutionConfig {
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
             allowed_webhook_urls: Vec::new(),
-            endpoint_registry: vec![EndpointRegistryEntry {
-                endpoint_ref: "webhook_site_test".to_string(),
-                url: "https://webhook.site/test-endpoint".to_string(),
-                allowed_methods: vec!["POST".to_string()],
-                allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
-                required_scopes: vec!["contracts.run".to_string()],
-                timeout_ms: 10_000,
-                max_retries: 0,
-                evidence_policy: EndpointEvidencePolicy::SummaryOnly,
-                enabled: true,
-            }],
+            endpoint_registry: vec![
+                EndpointRegistryEntry {
+                    endpoint_ref: "webhook_site_test".to_string(),
+                    url: "https://webhook.site/test-endpoint".to_string(),
+                    allowed_methods: vec!["POST".to_string()],
+                    allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                    required_scopes: vec!["actions.run".to_string()],
+                    timeout_ms: 10_000,
+                    max_retries: 0,
+                    evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                    enabled: true,
+                },
+                EndpointRegistryEntry {
+                    endpoint_ref: "webhook_site_contract_run_test".to_string(),
+                    url: "https://webhook.site/test-endpoint".to_string(),
+                    allowed_methods: vec!["POST".to_string()],
+                    allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+                    required_scopes: vec!["contracts.run".to_string()],
+                    timeout_ms: 10_000,
+                    max_retries: 0,
+                    evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                    enabled: true,
+                },
+            ],
             timeout_ms: 10_000,
             max_retries: 0,
         }
@@ -1133,7 +1146,7 @@ mod tests {
                     "method": "POST",
                     "body": {"message":"ok"}
                 }),
-                auth_context: json!({"scopes":["contracts.run"]}),
+                auth_context: json!({"scopes":["actions.run"]}),
                 credential_refs: Vec::new(),
                 policy_result: PolicySummary {
                     decision: AdmissionDecision::Allow,
@@ -1147,6 +1160,39 @@ mod tests {
         assert_eq!(result.call.status, ConnectorCallStatus::Completed);
         assert_eq!(result.call.response["provider"], "deterministic_local_http_generic");
         assert_eq!(result.call.response["endpoint_ref"], "webhook_site_test");
+    }
+
+    #[tokio::test]
+    async fn deterministic_local_executor_allows_contract_run_endpoint_with_contracts_scope() {
+        let exec =
+            DeterministicLocalConnectorExecutor::new(ConnectorExecutionConfig::deterministic_local_default());
+        let result = exec
+            .execute(ConnectorExecutionRequest {
+                connector_id: "connector.http.generic.v1".to_string(),
+                call_id: "call_http_generic_contract_run_01".to_string(),
+                side_effect_intent: SideEffectIntent::ExternalNetwork,
+                request: json!({
+                    "endpoint_ref": "webhook_site_contract_run_test",
+                    "method": "POST",
+                    "body": {"message":"ok"}
+                }),
+                auth_context: json!({"scopes":["contracts.run"]}),
+                credential_refs: Vec::new(),
+                policy_result: PolicySummary {
+                    decision: AdmissionDecision::Allow,
+                    policy_version: "policy.default.v0".to_string(),
+                    reason_code: "authorized".to_string(),
+                },
+                started_at: "2026-05-23T09:00:00Z".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.call.status, ConnectorCallStatus::Completed);
+        assert_eq!(result.call.response["provider"], "deterministic_local_http_generic");
+        assert_eq!(
+            result.call.response["endpoint_ref"],
+            "webhook_site_contract_run_test"
+        );
     }
 
     #[tokio::test]

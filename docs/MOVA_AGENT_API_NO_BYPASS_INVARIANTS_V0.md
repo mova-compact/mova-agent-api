@@ -33,6 +33,8 @@
 29. Transition failure is recorded before error response.
 30. Contract-run `connector_action` allows only `none`, `local_only`, or `external_network` side-effect intent.
 31. `destructive` side-effect intent remains forbidden in contract-run corridor V0.
+32. Contract-run connector execution never borrows `actions.run` scope from flat `/actions/run`.
+33. Endpoint scope policy remains corridor-specific: `webhook_site_test` -> `actions.run`, `webhook_site_contract_run_test` -> `contracts.run`.
 
 ## Known V0 limitation
 

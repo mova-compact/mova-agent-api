@@ -22,6 +22,10 @@
 Contract-run step execution no longer fabricates connector results for `connector_action` steps.
 For `connector_action` steps, execution builds `ConnectorExecutionRequest` from `OperationAdmission` and contract step metadata only.
 Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent`.
+`/actions/run` and contract-run corridor use separate endpoint policy scopes:
+- `webhook_site_test` -> `actions.run`
+- `webhook_site_contract_run_test` -> `contracts.run`
+Contract-run fixture `daily_owner_report_v0` uses `webhook_site_contract_run_test`.
 Contract-run `connector_action` V0 allows `side_effect_intent`: `none`, `local_only`, `external_network`.
 `destructive` remains denied.
 

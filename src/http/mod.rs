@@ -1234,7 +1234,7 @@ fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, Admitte
                 "execution_mode": "DETERMINISTIC",
                 "connector": {
                     "name":"connector.http.generic.v1",
-                    "endpoint_ref":"webhook_site_test",
+                    "endpoint_ref":"webhook_site_contract_run_test",
                     "method":"POST",
                     "side_effect_intent":"external_network"
                 },

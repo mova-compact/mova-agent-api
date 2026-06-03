@@ -65,7 +65,7 @@ fn alpha_contract_flow() -> Value {
                 "execution_mode": "DETERMINISTIC",
                 "connector": {
                     "name": "connector.http.generic.v1",
-                    "endpoint_ref": "webhook_site_test",
+                    "endpoint_ref": "webhook_site_contract_run_test",
                     "method": "POST",
                     "side_effect_intent": "external_network"
                 },
@@ -228,14 +228,14 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert!(evidence_json["evidence"]["transitions"].as_array().unwrap().len() >= 2);
     let connector_summary = &evidence_json["evidence"]["steps"][0]["connector_summary"];
     assert_eq!(connector_summary["connector_id"], "connector.http.generic.v1");
-    assert_eq!(connector_summary["endpoint_ref"], "webhook_site_test");
+    assert_eq!(connector_summary["endpoint_ref"], "webhook_site_contract_run_test");
     assert_eq!(connector_summary["method"], "POST");
     assert_ne!(connector_summary["provider"], "contract_run_fixture");
     assert_eq!(connector_summary["provider"], "deterministic_local_http_generic");
     assert!(connector_summary.get("resolved_url").is_none());
     let admission = &evidence_json["evidence"]["steps"][0]["admission"];
     assert_eq!(admission["allowed_connector_id"], "connector.http.generic.v1");
-    assert_eq!(admission["allowed_endpoint_ref"], "webhook_site_test");
+    assert_eq!(admission["allowed_endpoint_ref"], "webhook_site_contract_run_test");
     assert_eq!(admission["allowed_method"], "POST");
     let first_transition = &evidence_json["evidence"]["transitions"][0];
     assert_eq!(first_transition["from_step_id"], "step_001");
@@ -245,6 +245,50 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     let second_transition = &evidence_json["evidence"]["transitions"][1];
     assert_eq!(second_transition["from_step_id"], "step_002");
     assert_eq!(second_transition["outcome"], "approve");
+}
+
+#[tokio::test]
+async fn contract_run_corridor_uses_contract_run_endpoint_scope() {
+    let app = router();
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap().to_string();
+
+    let next = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/next"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.status(), StatusCode::OK);
+    let next_body = to_bytes(next.into_body(), usize::MAX).await.unwrap();
+    let next_json: Value = serde_json::from_slice(&next_body).unwrap();
+    let admission = &next_json["operation_admission"];
+    assert_eq!(admission["allowed_connector_id"], "connector.http.generic.v1");
+    assert_eq!(
+        admission["allowed_endpoint_ref"],
+        "webhook_site_contract_run_test"
+    );
+    assert_eq!(admission["allowed_method"], "POST");
 }
 
 #[tokio::test]
@@ -695,7 +739,7 @@ async fn contract_run_corridor_registration_rejects_missing_operation_id() {
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "external_network"
                     },
@@ -740,7 +784,7 @@ async fn contract_run_corridor_registration_rejects_duplicate_step_id() {
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "external_network"
                     },
@@ -791,7 +835,7 @@ async fn contract_run_corridor_registration_rejects_missing_entry() {
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "external_network"
                     },
@@ -836,7 +880,7 @@ async fn contract_run_corridor_registration_rejects_missing_transition_target() 
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "external_network"
                     },
@@ -920,7 +964,7 @@ async fn contract_run_corridor_registration_accepts_local_only_side_effect_inten
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "local_only"
                     },
@@ -975,7 +1019,7 @@ async fn contract_run_corridor_registration_rejects_destructive_side_effect_inte
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "destructive"
                     },
@@ -1024,7 +1068,7 @@ async fn contract_run_corridor_registration_rejects_unknown_side_effect_intent()
                     "execution_mode": "DETERMINISTIC",
                     "connector": {
                         "name": "connector.http.generic.v1",
-                        "endpoint_ref": "webhook_site_test",
+                        "endpoint_ref": "webhook_site_contract_run_test",
                         "method": "POST",
                         "side_effect_intent": "external_magic"
                     },

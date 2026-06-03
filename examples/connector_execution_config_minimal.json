@@ -26,6 +26,23 @@
       "max_retries": 0,
       "evidence_policy": "summary_only",
       "enabled": true
+    },
+    {
+      "endpoint_ref": "webhook_site_contract_run_test",
+      "url": "https://webhook.site/91c77fd2-f847-43ed-9c18-79b5aebc8b95",
+      "allowed_methods": [
+        "POST"
+      ],
+      "allowed_side_effect_intents": [
+        "external_network"
+      ],
+      "required_scopes": [
+        "contracts.run"
+      ],
+      "timeout_ms": 10000,
+      "max_retries": 0,
+      "evidence_policy": "summary_only",
+      "enabled": true
     }
   ],
   "timeout_ms": 10000,

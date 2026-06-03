@@ -11,7 +11,7 @@
     "decision": "allow",
     "reason_code": "NEXT_OPERATION_ALLOWED",
     "allowed_connector_id": "connector.http.generic.v1",
-    "allowed_endpoint_ref": "webhook_site_test",
+    "allowed_endpoint_ref": "webhook_site_contract_run_test",
     "allowed_method": "POST"
   },
   "metadata": {},
