@@ -8,16 +8,8 @@
     "channel": "api",
     "client_id": "client_001"
   },
-  "auth_context": {
-    "mode": "placeholder",
-    "scopes": ["contracts.run"],
-    "source": "example",
-    "verified": false
-  },
   "inputs": {},
-  "context": {
-    "tenant_id": "tenant_001"
-  },
+  "context": {},
   "correlation": {
     "trace_id": "trace_contract_001",
     "correlation_id": "corr_contract_001"

@@ -26,6 +26,7 @@ use crate::gate::{HumanGate, HumanGateDecision, HumanGateResolutionRequest, Huma
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::operation_admission::OperationAdmission;
 use crate::policy::{AdmissionDecision, PolicyAdmission};
+use crate::public_api::{authenticate_api_key, PublicApiAuthError, PublicApiConfig};
 use crate::request::{parse_request_envelope, validate_request_envelope};
 use crate::secrets::redact_json;
 use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
@@ -48,6 +49,7 @@ struct WorkerState {
     run_store: Arc<dyn RunStore>,
     auth_verifier: Arc<dyn AuthVerifier>,
     connector_executor: Arc<dyn ConnectorExecutor>,
+    public_api: PublicApiConfig,
     provider_connector_registry: Vec<ProviderConnectorRegistryEntry>,
     denied_client_ids: Vec<String>,
     kv_store: Option<worker::kv::KvStore>,
@@ -325,6 +327,23 @@ fn provider_connector_registry_from_env(env: &Env) -> Vec<ProviderConnectorRegis
         .unwrap_or_default()
 }
 
+fn public_api_config_from_env(env: &Env) -> PublicApiConfig {
+    let mut cfg = PublicApiConfig::deterministic_local_default();
+    if let Ok(value) = env.var("MOVA_API_KEY") {
+        cfg.api_key = value.to_string();
+    }
+    if let Ok(value) = env.var("MOVA_SERVER_TENANT_ID") {
+        cfg.tenant_id = value.to_string();
+    }
+    if let Ok(value) = env.var("MOVA_PUBLIC_ACTOR_ID") {
+        cfg.actor_id = value.to_string();
+    }
+    if let Ok(value) = env.var("MOVA_PUBLIC_CLIENT_ID") {
+        cfg.client_id = value.to_string();
+    }
+    cfg
+}
+
 fn http_generic_config_from_env(env: &Env) -> Option<ConnectorExecutionConfig> {
     let provider_connector_registry = provider_connector_registry_from_env(env);
     if let Ok(raw) = env.var("MOVA_HTTP_ENDPOINT_REGISTRY_JSON") {
@@ -422,6 +441,7 @@ fn state_from_env(env: &Env) -> WorkerState {
                 run_store,
                 auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
                 connector_executor: executor,
+                public_api: public_api_config_from_env(env),
                 provider_connector_registry,
                 denied_client_ids,
                 kv_store,
@@ -465,6 +485,7 @@ fn state_from_env(env: &Env) -> WorkerState {
                 run_store,
                 auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
                 connector_executor: executor,
+                public_api: public_api_config_from_env(env),
                 provider_connector_registry,
                 denied_client_ids,
                 kv_store,
@@ -509,6 +530,7 @@ fn state_from_env(env: &Env) -> WorkerState {
         run_store,
         auth_verifier: Arc::from(create_auth_verifier(&crate::auth::AuthTrustConfig::default_v0())),
         connector_executor,
+        public_api: public_api_config_from_env(env),
         provider_connector_registry: provider_connector_registry_from_env(env),
         denied_client_ids,
         kv_store,
@@ -664,6 +686,37 @@ fn json_error(status: u16, code: &str, message: &str, details: Vec<String>) -> R
         }
     }))
     .map(|r| r.with_status(status))
+}
+
+fn worker_public_auth_error(error: PublicApiAuthError) -> Result<Response> {
+    match error {
+        PublicApiAuthError::MissingApiKey => json_error(
+            401,
+            "authentication_required",
+            "missing x-mova-api-key",
+            vec!["header: x-mova-api-key".to_string()],
+        ),
+        PublicApiAuthError::InvalidApiKey => json_error(
+            403,
+            "authentication_failed",
+            "invalid x-mova-api-key",
+            vec!["header: x-mova-api-key".to_string()],
+        ),
+    }
+}
+
+fn authorize_worker_public_contract_route(
+    req: &Request,
+    state: &WorkerState,
+) -> std::result::Result<crate::request::AuthContext, Result<Response>> {
+    let api_key = req
+        .headers()
+        .get("x-mova-api-key")
+        .ok()
+        .flatten()
+        .map(|value| value.to_string());
+    authenticate_api_key(api_key.as_deref(), &state.public_api).map_err(worker_public_auth_error)?;
+    Ok(state.public_api.auth_context())
 }
 
 fn parse_json_with_limit(bytes: &[u8]) -> std::result::Result<Value, String> {
@@ -1793,6 +1846,7 @@ fn serialize_contract_run_status(state: &CorridorContractRunState) -> Value {
     serde_json::to_value(crate::contract_run::ContractRunStatusResponse {
         run_id: state.run_id.clone(),
         contract_id: state.contract_id.clone(),
+        tenant_id: state.tenant_id.clone(),
         status: state.status,
         current_step_id: state.current_step_id.clone(),
         next_allowed_operation_id: state.next_allowed_operation_id.clone(),
@@ -1808,8 +1862,12 @@ async fn handle_contract_run_start(
     state: Arc<WorkerState>,
     contract_id: String,
 ) -> Result<Response> {
+    let auth_context = match authorize_worker_public_contract_route(&req, state.as_ref()) {
+        Ok(value) => value,
+        Err(err) => return err,
+    };
     let body = req.bytes().await?;
-    let payload = match parse_json_with_limit(&body) {
+    let mut payload = match parse_json_with_limit(&body) {
         Ok(v) => v,
         Err(message) if message.starts_with("body too large") => {
             return contract_error(413, "request_too_large", "request body exceeds limit", vec![message]);
@@ -1818,6 +1876,26 @@ async fn handle_contract_run_start(
             return contract_error(400, "validation_failed", "request parsing failed", vec![message]);
         }
     };
+    if let Some(root) = payload.as_object_mut() {
+        let context = root
+            .entry("context".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(context_obj) = context.as_object_mut() {
+            if context_obj.get("tenant_id").is_some() {
+                return contract_error(
+                    400,
+                    "tenant_override_forbidden",
+                    "client cannot set tenant_id",
+                    vec!["context.tenant_id".to_string()],
+                );
+            }
+            context_obj.insert("tenant_id".to_string(), json!(state.public_api.tenant_id.clone()));
+        }
+        root.insert(
+            "auth_context".to_string(),
+            serde_json::to_value(&auth_context).unwrap_or_else(|_| json!({})),
+        );
+    }
 
     let request: CorridorContractRunRequest = match serde_json::from_value(payload) {
         Ok(value) => value,
@@ -1833,13 +1911,12 @@ async fn handle_contract_run_start(
     if request.request_id.trim().is_empty()
         || request.actor.actor_id.trim().is_empty()
         || request.source.client_id.trim().is_empty()
-        || request.auth_context.mode.trim().is_empty()
     {
         return contract_error(
             400,
             "validation_failed",
             "contract run request validation failed",
-            vec!["request_id, actor, source, and auth_context.mode are required".to_string()],
+            vec!["request_id, actor, and source are required".to_string()],
         );
     }
 
@@ -1861,7 +1938,7 @@ async fn handle_contract_run_start(
     let scope_admission = contract_run_scope_admission(
         &format!("contract_run_{}", request.request_id),
         "op_start_contract",
-        &request.auth_context,
+        &auth_context,
         state.auth_verifier.as_ref(),
     );
     if scope_admission.decision != AdmissionDecision::Allow {
@@ -1903,8 +1980,9 @@ async fn handle_contract_run_start(
     let mut run_state = CorridorContractRunState {
         run_id: run_id.clone(),
         contract_id: contract_id.clone(),
+        tenant_id: state.public_api.tenant_id.clone(),
         status: CorridorContractRunStatus::Accepted,
-        auth_context: request.auth_context.clone(),
+        auth_context: auth_context.clone(),
         current_step_id: admitted_contract.flow.entry.clone(),
         next_allowed_operation_id: entry_step.operation_id.clone(),
         completed_step_ids: Vec::new(),
@@ -1913,8 +1991,11 @@ async fn handle_contract_run_start(
         observation_count: 0,
         created_at: "2026-05-23T08:30:00Z".to_string(),
         updated_at: "2026-05-23T08:30:00Z".to_string(),
+        start_idempotency_key: None,
+        last_step_idempotency_key: None,
         steps,
         gate: None,
+        step_execution_records: HashMap::new(),
         last_admission: None,
     };
     let admission = build_current_operation_admission(
@@ -2767,6 +2848,7 @@ async fn handle_contract_run_evidence(state: Arc<WorkerState>, run_id: String) -
     Response::from_json(&build_contract_run_evidence_response(
         run_state.run_id.clone(),
         run_state.contract_id.clone(),
+        run_state.tenant_id.clone(),
         run_state.status,
         run_state.trace_ref.clone(),
         &observations,
@@ -2774,11 +2856,15 @@ async fn handle_contract_run_evidence(state: Arc<WorkerState>, run_id: String) -
         json!(gates),
         json!(transitions),
         json!(transition_failures),
+        run_state.last_step_idempotency_key.clone().or(run_state.start_idempotency_key.clone()),
         contract_run_policy_summary(run_state.last_admission.as_ref()),
     ))
 }
 
 async fn dispatch_worker_route(req: Request, state: Arc<WorkerState>, route: WorkerRoute) -> Result<Response> {
+    if let Err(err) = authorize_worker_public_contract_route(&req, state.as_ref()) {
+        return err;
+    }
     match route {
         WorkerRoute::StartContractRun { contract_id } => handle_contract_run_start(req, state, contract_id).await,
         WorkerRoute::GetContractRunStatus { run_id } => handle_contract_run_status(state, run_id).await,
@@ -2800,6 +2886,16 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let state = Arc::new(state_from_env(&env));
     if let Some(route) = match_worker_route(method.as_str(), path.as_str()) {
         return dispatch_worker_route(req, state, route).await;
+    }
+    if !matches!(path.as_str(), "/health" | "/ready" | "/capabilities") {
+        return Response::from_json(&json!({
+            "error": {
+                "code": "route_not_found",
+                "message": "route is not public in v0.1 runtime surface",
+                "details": [format!("method: {method}"), format!("path: {path}")]
+            }
+        }))
+        .map(|response| response.with_status(404));
     }
     let state_run = Arc::clone(&state);
     let state_get_run = Arc::clone(&state);

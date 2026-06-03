@@ -6,7 +6,6 @@
     "request_id",
     "actor",
     "source",
-    "auth_context",
     "inputs",
     "context",
     "correlation",

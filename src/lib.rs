@@ -16,6 +16,7 @@ pub mod http;
 pub mod observation;
 pub mod operation_admission;
 pub mod policy;
+pub mod public_api;
 pub mod request;
 pub mod runtime;
 pub mod secrets;

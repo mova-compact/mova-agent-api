@@ -1,5 +1,6 @@
 param(
-  [string]$BaseUrl = "http://127.0.0.1:8787"
+  [string]$BaseUrl = "http://127.0.0.1:8787",
+  [string]$ApiKey = "mova-dev-key"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,7 @@ function Invoke-JsonRequest {
     Method = $Method
     Uri = $Url
     ContentType = "application/json"
+    Headers = @{ "x-mova-api-key" = $ApiKey }
   }
   if ($null -ne $Body) {
     $params.Body = ($Body | ConvertTo-Json -Depth 10)

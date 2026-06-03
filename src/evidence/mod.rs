@@ -79,6 +79,7 @@ pub fn build_evidence_response(
 pub fn build_contract_run_evidence_response(
     run_id: String,
     contract_id: String,
+    tenant_id: String,
     status: ContractRunStatus,
     trace_ref: String,
     observations: &[ObservationRecord],
@@ -86,6 +87,7 @@ pub fn build_contract_run_evidence_response(
     gates: Value,
     transitions: Value,
     transition_failures: Value,
+    idempotency_key: Option<String>,
     policy_summary: PolicySummary,
 ) -> ContractRunEvidenceResponse {
     let observation_refs = observations
@@ -96,13 +98,15 @@ pub fn build_contract_run_evidence_response(
     ContractRunEvidenceResponse {
         run_id,
         contract_id,
+        tenant_id,
         status,
         result: serde_json::json!({"outcome": status.as_str()}),
         evidence: serde_json::json!({
             "steps": steps,
             "gates": gates,
             "transitions": transitions,
-            "transition_failures": transition_failures
+            "transition_failures": transition_failures,
+            "idempotency_key": idempotency_key
         }),
         trace_ref,
         observation_refs,

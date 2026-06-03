@@ -23,6 +23,7 @@ use crate::github_file_bridge::run_barbershop_file_e2e;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::operation_admission::OperationAdmission;
 use crate::policy::{AdmissionDecision, PolicyAdmission};
+use crate::public_api::{authenticate_api_key, sanitize_idempotency_key, PublicApiAuthError, PublicApiConfig};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
 use crate::runtime::{
     LocalEnvRuntimeProvider, LocalEnvSecretResolver, RuntimeProvider, RuntimeProviderCapabilities,
@@ -64,6 +65,7 @@ pub struct AppState {
     connector_executor: Arc<dyn ConnectorExecutor>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_provider_capabilities: RuntimeProviderCapabilities,
+    public_api: PublicApiConfig,
     provider_connector_registry: Vec<ProviderConnectorRegistryEntry>,
     admitted_contracts: Arc<Mutex<HashMap<String, AdmittedContract>>>,
     legacy_contract_runs: Arc<Mutex<HashMap<String, LegacyContractRunState>>>,
@@ -196,6 +198,10 @@ pub fn router() -> Router {
     router_with_state(AppState::new())
 }
 
+pub fn public_router() -> Router {
+    public_router_with_state(AppState::new())
+}
+
 pub fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/capabilities", get(get_capabilities))
@@ -209,6 +215,21 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/contracts/:contract_id/run", post(post_contract_run))
         .route("/contracts/:contract_id/runs", post(post_contract_run_start))
         .route("/contracts/runs/:run_id/decision", post(post_contract_run_decision))
+        .route("/contract-runs/:run_id", get(get_contract_run_status))
+        .route("/contract-runs/:run_id/next", get(get_contract_run_next))
+        .route("/contract-runs/:run_id/steps/:step_id/execute", post(post_contract_run_step_execute))
+        .route("/contract-runs/:run_id/gates/current", get(get_contract_run_current_gate))
+        .route("/contract-runs/:run_id/gates/:gate_id/resolve", post(post_contract_run_gate_resolve))
+        .route("/contract-runs/:run_id/evidence", get(get_contract_run_evidence))
+        .with_state(state)
+}
+
+pub fn public_router_with_state(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(get_health))
+        .route("/ready", get(get_ready))
+        .route("/capabilities", get(get_capabilities))
+        .route("/contracts/:contract_id/runs", post(post_contract_run_start))
         .route("/contract-runs/:run_id", get(get_contract_run_status))
         .route("/contract-runs/:run_id/next", get(get_contract_run_next))
         .route("/contract-runs/:run_id/steps/:step_id/execute", post(post_contract_run_step_execute))
@@ -237,6 +258,7 @@ impl AppState {
             connector_executor,
             secret_resolver,
             runtime_provider_capabilities: provider.capabilities(),
+            public_api: PublicApiConfig::from_env_or_default(),
             provider_connector_registry: runtime.connectors.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -265,6 +287,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            public_api: PublicApiConfig::deterministic_local_default(),
             provider_connector_registry: connector_config.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -291,6 +314,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            public_api: PublicApiConfig::deterministic_local_default(),
             provider_connector_registry: connector_config.provider_connector_registry.clone(),
             admitted_contracts,
             legacy_contract_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -318,6 +342,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            public_api: PublicApiConfig::deterministic_local_default(),
             provider_connector_registry: ConnectorExecutionConfig::deterministic_local_default()
                 .provider_connector_registry,
             admitted_contracts,
@@ -346,6 +371,7 @@ impl AppState {
                 supports_secret_resolution: true,
                 supports_live_deploy_binding: false,
             },
+            public_api: PublicApiConfig::deterministic_local_default(),
             provider_connector_registry: ConnectorExecutionConfig::deterministic_local_default()
                 .provider_connector_registry,
             admitted_contracts,
@@ -365,6 +391,99 @@ pub fn auth_placeholder() -> AuthPlaceholder {
         auth_mode: "placeholder".to_string(),
         enforced: false,
     }
+}
+
+async fn get_health() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "service": "mova-agent-api-v0",
+        "version": "v0.1.0"
+    }))
+}
+
+async fn get_ready() -> Json<Value> {
+    Json(json!({
+        "ready": true,
+        "checks": {
+            "storage": "bound",
+            "connector": "configured"
+        }
+    }))
+}
+
+fn public_api_auth_error(error: PublicApiAuthError) -> (StatusCode, Json<ErrorResponse>) {
+    match error {
+        PublicApiAuthError::MissingApiKey => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "authentication_required".to_string(),
+                    message: "missing x-mova-api-key".to_string(),
+                    details: vec!["header: x-mova-api-key".to_string()],
+                },
+            }),
+        ),
+        PublicApiAuthError::InvalidApiKey => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "authentication_failed".to_string(),
+                    message: "invalid x-mova-api-key".to_string(),
+                    details: vec!["header: x-mova-api-key".to_string()],
+                },
+            }),
+        ),
+    }
+}
+
+fn authorize_public_contract_route(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, (StatusCode, Json<ErrorResponse>)> {
+    let api_key = header_value(headers, "x-mova-api-key");
+    authenticate_api_key(api_key.as_deref(), &state.public_api)
+        .map_err(public_api_auth_error)?;
+    Ok(state.public_api.auth_context())
+}
+
+fn inject_public_contract_run_context(
+    mut payload: Value,
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> Result<Value, (StatusCode, Json<ErrorResponse>)> {
+    let Some(root) = payload.as_object_mut() else {
+        return Err(bad_request(
+            "validation_failed",
+            "contract run request must be an object",
+            vec!["payload".to_string()],
+        ));
+    };
+    let context = root
+        .entry("context".to_string())
+        .or_insert_with(|| json!({}));
+    let Some(context_obj) = context.as_object_mut() else {
+        return Err(bad_request(
+            "validation_failed",
+            "context must be an object",
+            vec!["context".to_string()],
+        ));
+    };
+    if context_obj.get("tenant_id").is_some() {
+        return Err(bad_request(
+            "tenant_override_forbidden",
+            "client cannot set tenant_id",
+            vec!["context.tenant_id".to_string()],
+        ));
+    }
+    context_obj.insert(
+        "tenant_id".to_string(),
+        json!(state.public_api.tenant_id.clone()),
+    );
+    root.insert(
+        "auth_context".to_string(),
+        serde_json::to_value(auth_context).unwrap_or_else(|_| json!({})),
+    );
+    Ok(payload)
 }
 
 async fn get_capabilities(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
@@ -1360,6 +1479,7 @@ fn serialize_contract_run_status(state: &ContractRunState) -> CorridorRunStatusR
     CorridorRunStatusResponse {
         run_id: state.run_id.clone(),
         contract_id: state.contract_id.clone(),
+        tenant_id: state.tenant_id.clone(),
         status: state.status,
         current_step_id: state.current_step_id.clone(),
         next_allowed_operation_id: state.next_allowed_operation_id.clone(),
@@ -1911,8 +2031,9 @@ fn append_contract_run_observation(
 
 async fn post_contract_run_start(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(contract_id): Path<String>,
-    Json(payload): Json<Value>,
+    Json(raw_payload): Json<Value>,
 ) -> impl IntoResponse {
     let _contract = {
         let contracts = state
@@ -1935,6 +2056,14 @@ async fn post_contract_run_start(
             .into_response();
     }
 
+    let auth_context = match authorize_public_contract_route(&headers, &state) {
+        Ok(value) => value,
+        Err(err) => return err.into_response(),
+    };
+    let payload = match inject_public_contract_run_context(raw_payload, &state, &auth_context) {
+        Ok(value) => value,
+        Err(err) => return err.into_response(),
+    };
     let request: ContractRunRequest = match serde_json::from_value(payload) {
         Ok(value) => value,
         Err(err) => {
@@ -1949,12 +2078,11 @@ async fn post_contract_run_start(
     if request.request_id.trim().is_empty()
         || request.actor.actor_id.trim().is_empty()
         || request.source.client_id.trim().is_empty()
-        || request.auth_context.mode.trim().is_empty()
     {
         return bad_request(
             "validation_failed",
             "contract run request validation failed",
-            vec!["request_id, actor, source, and auth_context.mode are required".to_string()],
+            vec!["request_id, actor, and source are required".to_string()],
         )
         .into_response();
     }
@@ -1979,7 +2107,35 @@ async fn post_contract_run_start(
             .into_response();
     }
 
-    let run_id = format!("contract_run_{}", request.request_id);
+    let start_idempotency_key = header_value(&headers, "idempotency-key")
+        .map(|value| sanitize_idempotency_key(&value))
+        .filter(|value| !value.is_empty());
+    let run_id = if let Some(key) = start_idempotency_key.clone() {
+        format!("contract_run_idem_{key}")
+    } else {
+        format!("contract_run_{}", request.request_id)
+    };
+    {
+        let runs = state.contract_runs.lock().expect("contract run lock poisoned");
+        if let Some(existing) = runs.get(&run_id) {
+            return (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "run_id": existing.run_id,
+                    "contract_id": existing.contract_id,
+                    "tenant_id": existing.tenant_id,
+                    "status": existing.status.as_str(),
+                    "current_step_id": existing.current_step_id,
+                    "next_allowed_operation_id": existing.next_allowed_operation_id,
+                    "trace_ref": existing.trace_ref,
+                    "observation_count": existing.observation_count,
+                    "gate": existing.gate,
+                    "idempotent_replay": true
+                })),
+            )
+                .into_response();
+        }
+    }
     let trace_ref = request
         .correlation
         .get("trace_id")
@@ -2010,8 +2166,9 @@ async fn post_contract_run_start(
     let mut run_state = ContractRunState {
         run_id: run_id.clone(),
         contract_id: contract_id.clone(),
+        tenant_id: state.public_api.tenant_id.clone(),
         status: ContractRunStatus::Accepted,
-        auth_context: request.auth_context.clone(),
+        auth_context: auth_context.clone(),
         current_step_id: admitted_contract.flow.entry.clone(),
         next_allowed_operation_id: entry_step.operation_id.clone(),
         completed_step_ids: Vec::new(),
@@ -2020,8 +2177,11 @@ async fn post_contract_run_start(
         observation_count: 0,
         created_at: "2026-05-23T08:30:00Z".to_string(),
         updated_at: "2026-05-23T08:30:00Z".to_string(),
+        start_idempotency_key: start_idempotency_key.clone(),
+        last_step_idempotency_key: None,
         steps,
         gate: None,
+        step_execution_records: HashMap::new(),
         last_admission: None,
     };
     let admission = build_current_operation_admission(
@@ -2040,8 +2200,8 @@ async fn post_contract_run_start(
             event_type: "contract_run.started".to_string(),
             timestamp: "2026-05-23T08:30:00Z".to_string(),
             subject: json!({"contract_id": contract_id, "actor_id": request.actor.actor_id}),
-            result: json!({"status": "accepted"}),
-            metadata: json!({}),
+            result: json!({"status": "accepted", "tenant_id": state.public_api.tenant_id}),
+            metadata: json!({"tenant_id": state.public_api.tenant_id, "idempotency_key": start_idempotency_key}),
             evidence_ref: format!("ev_{run_id}_001"),
         },
     );
@@ -2059,12 +2219,14 @@ async fn post_contract_run_start(
         Json(json!({
             "run_id": run_id,
             "contract_id": contract_id,
+            "tenant_id": run_state.tenant_id,
             "status": run_state.status.as_str(),
             "current_step_id": run_state.current_step_id,
             "next_allowed_operation_id": run_state.next_allowed_operation_id,
             "trace_ref": trace_ref,
             "observation_count": run_state.observation_count,
-            "gate": Value::Null
+            "gate": Value::Null,
+            "idempotency_key": start_idempotency_key
         })),
     )
         .into_response()
@@ -2072,8 +2234,12 @@ async fn post_contract_run_start(
 
 async fn get_contract_run_status(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let runs = state.contract_runs.lock().expect("contract run lock poisoned");
     match runs.get(&run_id) {
         Some(run_state) => (StatusCode::OK, Json(serialize_contract_run_status(run_state))).into_response(),
@@ -2093,8 +2259,12 @@ async fn get_contract_run_status(
 
 async fn get_contract_run_next(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
     let run_state = match runs.get_mut(&run_id) {
         Some(run_state) => run_state,
@@ -2135,14 +2305,21 @@ async fn get_contract_run_next(
 
 async fn post_contract_run_step_execute(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((run_id, step_id)): Path<(String, String)>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let operation_id = payload
         .get("operation_id")
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .to_string();
+    let execute_idempotency_key = header_value(&headers, "idempotency-key")
+        .map(|value| sanitize_idempotency_key(&value))
+        .filter(|value| !value.is_empty());
     if operation_id.is_empty() {
         return bad_request(
             "validation_failed",
@@ -2173,6 +2350,26 @@ async fn post_contract_run_step_execute(
     };
 
     if run_state.current_step_id != step_id {
+        if let Some(record) = run_state.step_execution_records.get(&step_id) {
+            if execute_idempotency_key.as_deref() == Some(record.idempotency_key.as_str()) {
+                return (
+                    StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::ACCEPTED),
+                    Json(record.response_body.clone()),
+                )
+                    .into_response();
+            }
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "step_already_executed".to_string(),
+                        message: "completed step cannot execute twice".to_string(),
+                        details: vec![format!("step_id: {step_id}")],
+                    },
+                }),
+            )
+                .into_response();
+        }
         return (
             StatusCode::CONFLICT,
             Json(ErrorResponse {
@@ -2515,6 +2712,7 @@ async fn post_contract_run_step_execute(
             .into_response();
     }
     run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
+    run_state.last_step_idempotency_key = execute_idempotency_key.clone();
     run_state.last_admission = Some(OperationAdmission {
         admission_id: format!("adm_exec_{}", run_state.run_id),
         decision: AdmissionDecision::Allow,
@@ -2578,6 +2776,40 @@ async fn post_contract_run_step_execute(
         },
     );
 
+    let response_body = json!({
+        "run_id": run_state.run_id,
+        "contract_id": run_state.contract_id,
+        "tenant_id": run_state.tenant_id,
+        "step_id": executed_step_id,
+        "operation_id": operation_id,
+        "status": "step_completed",
+        "next_step_id": run_state.current_step_id,
+        "current_step_id": run_state.current_step_id,
+        "next_allowed_operation_id": run_state.next_allowed_operation_id,
+        "trace_ref": run_state.trace_ref,
+        "observation_count": run_state.observation_count,
+        "idempotency_key": execute_idempotency_key,
+        "policy_summary": {
+            "decision": "allow",
+            "policy_version": "policy.default.v0",
+            "reason_code": "OPERATION_ALLOWED"
+        }
+    });
+    if let Some(key) = run_state
+        .last_step_idempotency_key
+        .clone()
+        .filter(|value| !value.is_empty())
+    {
+        run_state.step_execution_records.insert(
+            step_id.clone(),
+            crate::contract_run::StepExecutionRecord {
+                step_id: step_id.clone(),
+                idempotency_key: key,
+                status_code: StatusCode::ACCEPTED.as_u16(),
+                response_body: response_body.clone(),
+            },
+        );
+    }
     {
         let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
         runs.insert(run_id.clone(), run_state.clone());
@@ -2585,34 +2817,17 @@ async fn post_contract_run_step_execute(
     if let Err(err) = persist_contract_run_snapshot(&state, &run_state).await {
         return storage_unavailable(&err).into_response();
     }
-
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({
-            "run_id": run_state.run_id,
-            "contract_id": run_state.contract_id,
-            "step_id": executed_step_id,
-            "operation_id": operation_id,
-            "status": "step_completed",
-            "next_step_id": run_state.current_step_id,
-            "current_step_id": run_state.current_step_id,
-            "next_allowed_operation_id": run_state.next_allowed_operation_id,
-            "trace_ref": run_state.trace_ref,
-            "observation_count": run_state.observation_count,
-            "policy_summary": {
-                "decision": "allow",
-                "policy_version": "policy.default.v0",
-                "reason_code": "OPERATION_ALLOWED"
-            }
-        })),
-    )
-        .into_response()
+    (StatusCode::ACCEPTED, Json(response_body)).into_response()
 }
 
 async fn get_contract_run_current_gate(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let runs = state.contract_runs.lock().expect("contract run lock poisoned");
     let run_state = match runs.get(&run_id) {
         Some(run_state) => run_state,
@@ -2647,9 +2862,13 @@ async fn get_contract_run_current_gate(
 
 async fn post_contract_run_gate_resolve(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((run_id, gate_id)): Path<(String, String)>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let request: HumanGateResolutionRequest = match serde_json::from_value(payload) {
         Ok(value) => value,
         Err(err) => {
@@ -2893,8 +3112,12 @@ async fn post_contract_run_gate_resolve(
 
 async fn get_contract_run_evidence(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_public_contract_route(&headers, &state) {
+        return err.into_response();
+    }
     let run_state = {
         let runs = state.contract_runs.lock().expect("contract run lock poisoned");
         runs.get(&run_id).cloned()
@@ -2995,6 +3218,7 @@ async fn get_contract_run_evidence(
     let response = build_contract_run_evidence_response(
         run_state.run_id.clone(),
         run_state.contract_id.clone(),
+        run_state.tenant_id.clone(),
         run_state.status,
         run_state.trace_ref.clone(),
         &observations,
@@ -3002,6 +3226,7 @@ async fn get_contract_run_evidence(
         json!(gates),
         json!(transitions),
         json!(transition_failures),
+        run_state.last_step_idempotency_key.clone().or(run_state.start_idempotency_key.clone()),
         contract_run_policy_summary(run_state.last_admission.as_ref()),
     );
     (StatusCode::OK, Json(response)).into_response()

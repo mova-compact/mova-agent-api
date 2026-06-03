@@ -82,7 +82,11 @@ impl AuthTrustConfig {
             verifier_kind: "deterministic_local".to_string(),
             trusted_issuers: vec!["mova-trusted".to_string()],
             trusted_audiences: vec!["mova-agent-api".to_string()],
-            allowed_scopes: vec!["actions.run".to_string(), "actions.validate".to_string()],
+            allowed_scopes: vec![
+                "actions.run".to_string(),
+                "actions.validate".to_string(),
+                "contracts.run".to_string(),
+            ],
             offline_stub_fixtures: Vec::new(),
         }
     }

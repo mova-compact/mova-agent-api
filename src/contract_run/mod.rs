@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::contract_step::{ContractStep, ContractStepStatus, ContractStepType};
 use crate::contracts::{flow_step_by_id, pick_next_target, AdmittedContract};
@@ -48,6 +48,7 @@ impl ContractRunStatus {
 pub struct ContractRunState {
     pub run_id: String,
     pub contract_id: String,
+    pub tenant_id: String,
     pub status: ContractRunStatus,
     pub auth_context: AuthContext,
     pub current_step_id: String,
@@ -58,8 +59,11 @@ pub struct ContractRunState {
     pub observation_count: usize,
     pub created_at: String,
     pub updated_at: String,
+    pub start_idempotency_key: Option<String>,
+    pub last_step_idempotency_key: Option<String>,
     pub steps: Vec<ContractStep>,
     pub gate: Option<HumanGate>,
+    pub step_execution_records: HashMap<String, StepExecutionRecord>,
     pub last_admission: Option<OperationAdmission>,
 }
 
@@ -67,6 +71,7 @@ pub struct ContractRunState {
 pub struct ContractRunStatusResponse {
     pub run_id: String,
     pub contract_id: String,
+    pub tenant_id: String,
     pub status: ContractRunStatus,
     pub current_step_id: String,
     pub next_allowed_operation_id: Option<String>,
@@ -79,12 +84,21 @@ pub struct ContractRunStatusResponse {
 pub struct ContractRunEvidenceResponse {
     pub run_id: String,
     pub contract_id: String,
+    pub tenant_id: String,
     pub status: ContractRunStatus,
     pub result: Value,
     pub evidence: Value,
     pub trace_ref: String,
     pub observation_refs: Vec<String>,
     pub policy_summary: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepExecutionRecord {
+    pub step_id: String,
+    pub idempotency_key: String,
+    pub status_code: u16,
+    pub response_body: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,8 @@
 param(
   [string]$BaseUrl = "https://mova-agent-api-v0.s-myasoedov81.workers.dev",
   [string]$ContractId = "provider_connector_owner_report_v0",
-  [string]$Text = "MOVA provider connector smoke"
+  [string]$Text = "MOVA provider connector smoke",
+  [string]$ApiKey = "mova-dev-key"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,7 @@ function Invoke-JsonRequest {
     "-sS",
     "-X", $Method,
     "-H", "content-type: application/json",
+    "-H", "x-mova-api-key: $ApiKey",
     "-w", "`nSTATUS:%{http_code}"
   )
   if ($null -ne $Body) {

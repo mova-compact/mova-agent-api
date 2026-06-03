@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use mova_agent_api::auth::{create_auth_verifier, AuthTrustConfig, AuthVerifier};
 use mova_agent_api::connectors::{ConnectorExecutionError, ConnectorExecutor, FailingConnectorExecutor};
-use mova_agent_api::http::{router, router_with_state, AppState};
+use mova_agent_api::http::{public_router, router, router_with_state, AppState};
 use mova_agent_api::storage::{create_run_store, RunStore, StorageConfig};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -38,6 +38,22 @@ fn execute_body(operation_id: &str) -> String {
             "trace_id": "trace_contract_001",
             "correlation_id": "corr_contract_001"
         }
+    })
+    .to_string()
+}
+
+fn public_contract_run_start_body() -> String {
+    json!({
+        "request_id": "req_contract_public_001",
+        "actor": {"actor_type": "ai_agent", "actor_id": "agent_external"},
+        "source": {"channel": "api", "client_id": "client_external"},
+        "inputs": {},
+        "context": {},
+        "correlation": {
+            "trace_id": "trace_contract_001",
+            "correlation_id": "corr_contract_001"
+        },
+        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
     })
     .to_string()
 }
@@ -480,6 +496,129 @@ async fn provider_connector_contract_executes_with_fake_adapter_and_redacted_evi
     assert!(!serialized.contains("bot_token"));
     assert!(!serialized.contains("TELEGRAM_BOT_TOKEN"));
     assert!(!serialized.contains("api.telegram.org"));
+}
+
+#[tokio::test]
+async fn public_contract_run_requires_api_key() {
+    let app = public_router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn public_contract_run_rejects_invalid_api_key() {
+    let app = public_router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", "wrong")
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn public_contract_run_accepts_valid_api_key_and_assigns_server_tenant() {
+    let app = public_router();
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", "mova-dev-key")
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["tenant_id"], "tenant_server_owned");
+
+    let run_id = json["run_id"].as_str().unwrap();
+    let status = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}"))
+                .header("x-mova-api-key", "mova-dev-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let body = to_bytes(status.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["tenant_id"], "tenant_server_owned");
+}
+
+#[tokio::test]
+async fn public_contract_run_rejects_client_tenant_override() {
+    let app = public_router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", "mova-dev-key")
+                .body(Body::from(
+                    json!({
+                        "request_id": "req_contract_public_002",
+                        "actor": {"actor_type": "ai_agent", "actor_id": "agent_external"},
+                        "source": {"channel": "api", "client_id": "client_external"},
+                        "inputs": {},
+                        "context": {"tenant_id": "evil"},
+                        "correlation": {
+                            "trace_id": "trace_contract_001",
+                            "correlation_id": "corr_contract_001"
+                        },
+                        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn public_router_does_not_expose_contract_registration_route() {
+    let app = public_router();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
