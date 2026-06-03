@@ -172,3 +172,25 @@ Notes:
   - `R4` closed for public release surface with native tests + live start replay proof
   - `R5` closed for public release surface
   - `R7` remains blocked by missing Cloudflare Telegram secrets
+
+## V0.1 public runtime parity + docs cleanup
+- branch: `fix/cloudflare-contract-run-route-parity`
+- commit: `release-contract row in progress after replay/evidence hardening`
+- risks targeted:
+  - `R6 Runtime Divergence Risk`
+  - `R8 Documentation Drift Risk`
+- native public router proof:
+  - public router exposes only release routes
+  - `/actions/*`, `/runs/*`, `/contracts/register`, legacy compatibility mutation paths return `404`
+- Worker public router proof:
+  - public Worker surface still serves only release routes
+  - non-public routes remain `404 route_not_found`
+- OpenAPI proof:
+  - `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml` now documents only public release routes
+  - public contract-run routes document `401` missing API key and `403` invalid API key
+- release docs:
+  - `docs/MOVA_AGENT_API_PUBLIC_RUNTIME_PARITY_V0_1.md` added
+  - `docs/MOVA_AGENT_API_V0_1_CHANGELOG.md` added
+- release status:
+  - still `NOT READY`
+  - only open blocker remains `R7` until Telegram secrets are configured and live provider delivery succeeds

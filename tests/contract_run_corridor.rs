@@ -520,6 +520,36 @@ async fn public_contract_run_requires_api_key() {
 }
 
 #[tokio::test]
+async fn public_contract_run_status_requires_api_key_before_not_found() {
+    let app = public_router();
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/contract-runs/run_missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/contract-runs/run_missing")
+                .header("x-mova-api-key", "wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn public_contract_run_rejects_invalid_api_key() {
     let app = public_router();
     let response = app
@@ -819,6 +849,41 @@ async fn public_router_does_not_expose_contract_registration_route() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn public_router_does_not_expose_lab_or_internal_routes() {
+    let app = public_router();
+    let checks = vec![
+        (Method::POST, "/actions/validate", Some("{}")),
+        (Method::POST, "/actions/run", Some("{}")),
+        (Method::GET, "/runs/run_001", None),
+        (Method::GET, "/runs/run_001/evidence", None),
+        (Method::GET, "/contracts", None),
+        (Method::GET, "/contracts/daily_owner_report_v0", None),
+        (Method::POST, "/contracts/daily_owner_report_v0/run", Some("{}")),
+        (Method::POST, "/contracts/runs/run_001/decision", Some("{}")),
+    ];
+
+    for (method, uri, body) in checks {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                builder
+                    .body(match body {
+                        Some(value) => Body::from(value.to_string()),
+                        None => Body::empty(),
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "unexpected public exposure for {uri}");
+    }
 }
 
 #[tokio::test]

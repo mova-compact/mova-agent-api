@@ -46,6 +46,8 @@ Controlled contract-run corridor:
 - contract-run connector_action steps execute through guarded `ConnectorExecutor` boundary
 - contract-run transitions are resolved from admitted contract `flow.next`
 - contract-run flow is validated before admission, executable steps require explicit `operation_id`, and public evidence avoids resolved provider URLs
+- v0.1 public release surface is contract-run only and requires `X-MOVA-API-KEY`
+- v0.1 release remains `NOT READY` until real Telegram provider proof succeeds
 - no legacy implementation copied here
 
 ## Source of truth rule
@@ -72,6 +74,8 @@ Controlled contract-run corridor:
 - `docs/MOVA_AGENT_API_V0_HANDBOOK.md` - operator/user troubleshooting handbook
 - `docs/MOVA_AGENT_API_DOCS_INDEX_V0.md` - full docs map (user-facing vs internal)
 - `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml` - public API contract
+- `docs/MOVA_AGENT_API_PUBLIC_RUNTIME_PARITY_V0_1.md` - v0.1 proof that native public router, Worker, and OpenAPI share the same public surface
+- `docs/MOVA_AGENT_API_V0_1_CHANGELOG.md` - current v0.1 release changelog and blocker status
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md` - contract-run corridor boundary and limitation summary
 - `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md` - invariant list for non-bypass execution
 - `schemas/` + `examples/` - schema and payload references
@@ -80,7 +84,7 @@ Controlled contract-run corridor:
 
 ## Controlled contract-run corridor
 
-`/actions/run` remains the low-level single-action execution path.
+`/actions/run` remains an internal/lab low-level single-action execution path and is not part of the v0.1 public release contract.
 
 The contract-run API is the product-level corridor where the contract-run state owns step order and the agent can execute only the current admitted operation. This layer does not add cognition, dynamic routing, or autonomous orchestration.
 

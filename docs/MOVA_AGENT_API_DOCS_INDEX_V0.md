@@ -6,6 +6,10 @@
   - first-line troubleshooting for common operational/API issues.
 - `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml`
   - public route and error contract.
+- `docs/MOVA_AGENT_API_PUBLIC_RUNTIME_PARITY_V0_1.md`
+  - proof that native public router, Worker surface, and OpenAPI now match at the v0.1 public boundary.
+- `docs/MOVA_AGENT_API_V0_1_CHANGELOG.md`
+  - current v0.1 release changelog and explicit blocker status.
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
   - contract-run corridor summary and V0 limitation set.
 - `docs/MOVA_AGENT_API_CONTRACT_RUN_REAL_EXECUTION_PROOF_V0.md`
@@ -53,6 +57,8 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `docs/MOVA_AGENT_API_AUTH_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_PRODUCTION_AUTH_CONTRACT_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_VERIFIER_ADAPTER_CONTRACT_V0.md`
+- `docs/MOVA_AGENT_API_PUBLIC_RUNTIME_PARITY_V0_1.md`
+- `docs/MOVA_AGENT_API_V0_1_CHANGELOG.md`
 - `docs/MOVA_AGENT_API_PERSISTENCE_PROMOTION_BLOCK_V0.md`
 - `docs/MOVA_AGENT_API_CONNECTOR_EXECUTION_PROMOTION_BLOCK_V0.md`
 - `docs/MOVA_AGENT_API_RUNTIME_SECRET_BOUNDARY_BLOCK_V0.md`

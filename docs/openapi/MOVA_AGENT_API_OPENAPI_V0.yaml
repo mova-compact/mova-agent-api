@@ -103,348 +103,6 @@ paths:
                                 type: string
                             status:
                               type: string
-  /actions/validate:
-    post:
-      summary: Validate action request envelope without execution
-      operationId: validateAction
-      parameters:
-        - name: x-mova-auth-mode
-          in: header
-          required: false
-          schema:
-            type: string
-            enum:
-              - placeholder
-              - production
-              - offline_provider_stub
-          description: Optional placeholder auth mode metadata forwarded to policy input.
-          example: production
-        - name: x-mova-actor-id
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional actor identifier metadata forwarded to policy input.
-        - name: x-mova-token-ref
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
-          example: token://mova-trusted/agent_001?aud=mova-agent-api
-        - name: x-mova-scopes
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional comma-separated scope hints forwarded to policy input.
-          example: actions.run,actions.validate
-        - name: x-mova-auth-source
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional auth metadata source tag, for example `header`.
-        - name: Idempotency-Key
-          in: header
-          required: false
-          schema:
-            type: string
-            maxLength: 128
-          description: Optional idempotency key for replay-safe run submission.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RequestEnvelope"
-            examples:
-              universalHttpWebhook:
-                summary: Universal HTTP connector request using endpoint_ref allowlist
-                value:
-                  request_id: req_http_generic_01
-                  actor:
-                    actor_type: ai_agent
-                    actor_id: agent_001
-                  source:
-                    channel: api
-                    client_id: client_001
-                  auth_context:
-                    mode: placeholder
-                    scopes: [actions.run]
-                    source: example
-                    verified: false
-                  action:
-                    action_id: act_http_generic_01
-                    action_type: webhook_notify
-                    target_kind: webhook
-                    input_payload:
-                      message: mova http generic smoke
-                    policy_context:
-                      policy_profile_ref: policy.default.v0
-                    connector_context:
-                      connector_set: [connector.http.generic.v1]
-                      connector_id: connector.http.generic.v1
-                      side_effect_intent: external_network
-                      endpoint_ref: webhook_site_test
-                      method: POST
-                      headers:
-                        x-mova-contract: operator_terminal_smoke_v0
-                    trace_ref: trace:req_http_generic_01
-                  inputs:
-                    message: mova http generic smoke
-                  context:
-                    tenant_id: tenant_001
-                  correlation:
-                    trace_id: trace_http_generic_01
-                    correlation_id: corr_http_generic_01
-                  timestamps:
-                    requested_at: "2026-05-23T08:30:00Z"
-      responses:
-        "200":
-          description: Validation result
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - valid
-                properties:
-                  valid:
-                    type: boolean
-                  errors:
-                    type: array
-                    items:
-                      type: string
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /actions/run:
-    post:
-      summary: Run a single admitted action via flat path
-      operationId: runAction
-      parameters:
-        - name: x-mova-auth-mode
-          in: header
-          required: false
-          schema:
-            type: string
-            enum:
-              - placeholder
-              - production
-              - offline_provider_stub
-          description: Optional placeholder auth mode metadata forwarded to policy input.
-          example: production
-        - name: x-mova-actor-id
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional actor identifier metadata forwarded to policy input.
-        - name: x-mova-token-ref
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional token reference metadata. Production mode uses deterministic contract `token://<issuer>/<subject>?aud=<audience>`.
-          example: token://mova-trusted/agent_001?aud=mova-agent-api
-        - name: x-mova-scopes
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional comma-separated scope hints forwarded to policy input.
-          example: actions.run,actions.validate
-        - name: x-mova-auth-source
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Optional auth metadata source tag, for example `header`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RequestEnvelope"
-      responses:
-        "202":
-          description: Run accepted
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - run_id
-                  - status
-                  - trace_ref
-                  - observation_count
-                properties:
-                  run_id:
-                    type: string
-                  status:
-                    type: string
-                  trace_ref:
-                    type: string
-                  observation_count:
-                    type: integer
-                    minimum: 0
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "413":
-          description: Request body too large
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "429":
-          description: Rate limit exceeded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Authorization failure or connector guard denial
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "502":
-          description: Connector execution failure or runtime secret resolution failure
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "504":
-          description: Connector timeout
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "503":
-          description: Storage adapter unavailable
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /runs/{run_id}:
-    get:
-      summary: Get run status and summary
-      operationId: getRun
-      parameters:
-        - name: run_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Run shape
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - run_id
-                  - status
-                  - trace_ref
-                  - observation_count
-                properties:
-                  run_id:
-                    type: string
-                  status:
-                    type: string
-                  trace_ref:
-                    type: string
-                  observation_count:
-                    type: integer
-                    minimum: 0
-        "404":
-          description: Run not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "503":
-          description: Storage adapter unavailable
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /runs/{run_id}/evidence:
-    get:
-      summary: Get run evidence response
-      operationId: getRunEvidence
-      parameters:
-        - name: run_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Evidence response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EvidenceResponse"
-        "404":
-          description: Run not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "503":
-          description: Storage adapter unavailable
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /contracts/register:
-    post:
-      summary: Register an admitted contract package
-      operationId: registerContract
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        "201":
-          description: Contract registered
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - contract_id
-                  - admitted
-                  - mode
-                properties:
-                  contract_id:
-                    type: string
-                  admitted:
-                    type: boolean
-                  mode:
-                    type: string
-        "400":
-          description: Invalid contract package or invalid contract-run flow
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
   /contracts/{contract_id}/runs:
     post:
       summary: Start a controlled contract run
@@ -481,6 +139,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContractRunStatus"
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "400":
           description: Validation error
           content:
@@ -488,7 +152,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Authorization failure
+          description: Invalid public API key or authorization failure
           content:
             application/json:
               schema:
@@ -528,6 +192,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContractRunStatus"
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Invalid public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Run not found
           content:
@@ -572,6 +248,18 @@ paths:
                     $ref: "#/components/schemas/ContractStep"
                   operation_admission:
                     $ref: "#/components/schemas/OperationAdmission"
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Invalid public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Run not found
           content:
@@ -625,8 +313,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContractRunStepExecutionResponse"
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Policy or guard denial (`connector_override_forbidden`, `operation_not_allowed`, `human_gate_required`, connector guard denial)
+          description: Invalid public API key, policy denial, or guard denial (`connector_override_forbidden`, `operation_not_allowed`, `human_gate_required`, connector guard denial)
           content:
             application/json:
               schema:
@@ -706,6 +400,18 @@ paths:
                   gate:
                     type: object
                     nullable: true
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Invalid public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Run not found
           content:
@@ -746,6 +452,18 @@ paths:
             application/json:
               schema:
                 type: object
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Invalid public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Run not found
           content:
@@ -781,6 +499,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContractRunEvidenceResponse"
+        "401":
+          description: Missing public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Invalid public API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Run not found
           content:
