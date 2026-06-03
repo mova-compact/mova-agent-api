@@ -1590,8 +1590,10 @@ async fn post_contract_run_start(
             "contract_id": contract_id,
             "status": run_state.status.as_str(),
             "current_step_id": run_state.current_step_id,
+            "next_allowed_operation_id": run_state.next_allowed_operation_id,
             "trace_ref": trace_ref,
-            "observation_count": run_state.observation_count
+            "observation_count": run_state.observation_count,
+            "gate": Value::Null
         })),
     )
         .into_response()
@@ -1961,7 +1963,7 @@ async fn post_contract_run_gate_resolve(
         }
     };
 
-    let mut resolved_gate = HumanGate {
+    let resolved_gate = HumanGate {
         status: HumanGateStatus::Resolved,
         resolved_at: Some(
             request
