@@ -70,6 +70,11 @@ function Invoke-JsonRequest {
 }
 
 $startBody = Get-Content -Raw (Join-Path $PSScriptRoot "..\examples\contract_run_start_minimal.json") | ConvertFrom-Json
+$nonce = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$startBody.request_id = "req_provider_smoke_$nonce"
+$startBody.correlation.trace_id = "trace_provider_smoke_$nonce"
+$startBody.correlation.correlation_id = "corr_provider_smoke_$nonce"
+$startBody.timestamps.requested_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $start = Invoke-JsonRequest -Method POST -Url "$BaseUrl/contracts/$ContractId/runs" -Body $startBody -ExpectedStatus @(202)
 $runId = $start.Json.run_id
 

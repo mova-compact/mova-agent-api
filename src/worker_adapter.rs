@@ -1866,6 +1866,13 @@ async fn handle_contract_run_start(
         Ok(value) => value,
         Err(err) => return err,
     };
+    let start_idempotency_key = req
+        .headers()
+        .get("idempotency-key")
+        .ok()
+        .flatten()
+        .map(|value| sanitize_idempotency_key(value.as_str()))
+        .filter(|value| !value.is_empty());
     let body = req.bytes().await?;
     let mut payload = match parse_json_with_limit(&body) {
         Ok(v) => v,
@@ -1969,7 +1976,32 @@ async fn handle_contract_run_start(
         }
     };
 
-    let run_id = format!("contract_run_{}", request.request_id);
+    let run_id = if let Some(key) = start_idempotency_key.clone() {
+        format!("contract_run_idem_{key}")
+    } else {
+        format!("contract_run_{}", request.request_id)
+    };
+    match load_corridor_run_state(&state, &run_id).await {
+        Ok(Some(existing)) => {
+            return Response::from_json(&json!({
+                "run_id": existing.run_id,
+                "contract_id": existing.contract_id,
+                "tenant_id": existing.tenant_id,
+                "status": existing.status.as_str(),
+                "current_step_id": existing.current_step_id,
+                "next_allowed_operation_id": existing.next_allowed_operation_id,
+                "trace_ref": existing.trace_ref,
+                "observation_count": existing.observation_count,
+                "gate": existing.gate,
+                "idempotent_replay": true
+            }))
+            .map(|r| r.with_status(202));
+        }
+        Ok(None) => {}
+        Err(err) => {
+            return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]);
+        }
+    }
     let trace_ref = request
         .correlation
         .get("trace_id")
@@ -1991,7 +2023,7 @@ async fn handle_contract_run_start(
         observation_count: 0,
         created_at: "2026-05-23T08:30:00Z".to_string(),
         updated_at: "2026-05-23T08:30:00Z".to_string(),
-        start_idempotency_key: None,
+        start_idempotency_key: start_idempotency_key.clone(),
         last_step_idempotency_key: None,
         steps,
         gate: None,
@@ -2014,8 +2046,8 @@ async fn handle_contract_run_start(
             event_type: "contract_run.started".to_string(),
             timestamp: "2026-05-23T08:30:00Z".to_string(),
             subject: json!({"contract_id": contract_id, "actor_id": request.actor.actor_id}),
-            result: json!({"status": "accepted"}),
-            metadata: json!({}),
+            result: json!({"status": "accepted", "tenant_id": state.public_api.tenant_id}),
+            metadata: json!({"tenant_id": state.public_api.tenant_id, "idempotency_key": start_idempotency_key}),
             evidence_ref: format!("ev_{run_id}_001"),
         },
     );
@@ -2027,12 +2059,14 @@ async fn handle_contract_run_start(
     Response::from_json(&json!({
         "run_id": run_id,
         "contract_id": contract_id,
+        "tenant_id": run_state.tenant_id,
         "status": run_state.status.as_str(),
         "current_step_id": run_state.current_step_id,
         "next_allowed_operation_id": run_state.next_allowed_operation_id,
         "trace_ref": trace_ref,
         "observation_count": run_state.observation_count,
-        "gate": Value::Null
+        "gate": Value::Null,
+        "idempotency_key": start_idempotency_key
     }))
     .map(|r| r.with_status(202))
 }
@@ -2092,6 +2126,13 @@ async fn handle_contract_run_step_execute(
     run_id: String,
     step_id: String,
 ) -> Result<Response> {
+    let execute_idempotency_key = req
+        .headers()
+        .get("idempotency-key")
+        .ok()
+        .flatten()
+        .map(|value| sanitize_idempotency_key(value.as_str()))
+        .filter(|value| !value.is_empty());
     let body = req.bytes().await?;
     let payload = match parse_json_with_limit(&body) {
         Ok(v) => v,
@@ -2127,6 +2168,18 @@ async fn handle_contract_run_step_execute(
         Err(err) => return contract_error(503, "storage_unavailable", "contract run read failed", vec![err]),
     };
 
+    if let Some(record) = run_state.step_execution_records.get(&step_id) {
+        if execute_idempotency_key.as_deref() == Some(record.idempotency_key.as_str()) {
+            return Response::from_json(&record.response_body)
+                .map(|r| r.with_status(record.status_code));
+        }
+        return contract_error(
+            409,
+            "step_already_executed",
+            "completed step cannot execute twice",
+            vec![format!("step_id: {step_id}")],
+        );
+    }
     if run_state.current_step_id != step_id {
         return contract_error(
             409,
@@ -2435,6 +2488,7 @@ async fn handle_contract_run_step_execute(
         return contract_error(502, "contract_step_not_found", "transition target step was not found", vec![err]);
     }
     run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
+    run_state.last_step_idempotency_key = execute_idempotency_key.clone();
     run_state.last_admission = Some(OperationAdmission {
         admission_id: format!("adm_exec_{}", run_state.run_id),
         decision: AdmissionDecision::Allow,
@@ -2493,13 +2547,10 @@ async fn handle_contract_run_step_execute(
         },
     );
 
-    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
-        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
-    }
-
-    Response::from_json(&json!({
+    let response_body = json!({
         "run_id": run_state.run_id,
         "contract_id": run_state.contract_id,
+        "tenant_id": run_state.tenant_id,
         "step_id": executed_step_id,
         "operation_id": operation_id,
         "status": "step_completed",
@@ -2508,13 +2559,33 @@ async fn handle_contract_run_step_execute(
         "next_allowed_operation_id": run_state.next_allowed_operation_id,
         "trace_ref": run_state.trace_ref,
         "observation_count": run_state.observation_count,
+        "idempotency_key": execute_idempotency_key,
         "policy_summary": {
             "decision": "allow",
             "policy_version": "policy.default.v0",
             "reason_code": "OPERATION_ALLOWED"
         }
-    }))
-    .map(|r| r.with_status(202))
+    });
+    if let Some(key) = run_state
+        .last_step_idempotency_key
+        .clone()
+        .filter(|value| !value.is_empty())
+    {
+        run_state.step_execution_records.insert(
+            step_id.clone(),
+            crate::contract_run::StepExecutionRecord {
+                step_id: step_id.clone(),
+                idempotency_key: key,
+                status_code: 202,
+                response_body: response_body.clone(),
+            },
+        );
+    }
+    if let Err(err) = persist_corridor_run_state(&state, &run_state).await {
+        return contract_error(503, "storage_unavailable", "contract run persistence failed", vec![err]);
+    }
+
+    Response::from_json(&response_body).map(|r| r.with_status(202))
 }
 
 async fn handle_contract_run_current_gate(state: Arc<WorkerState>, run_id: String) -> Result<Response> {

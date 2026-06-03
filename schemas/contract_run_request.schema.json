@@ -31,20 +31,6 @@
         "client_id": { "type": "string" }
       }
     },
-    "auth_context": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["mode", "scopes", "source", "verified"],
-      "properties": {
-        "mode": { "type": "string" },
-        "scopes": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "source": { "type": "string" },
-        "verified": { "type": "boolean" }
-      }
-    },
     "inputs": { "type": "object" },
     "context": { "type": "object" },
     "correlation": { "type": "object" },

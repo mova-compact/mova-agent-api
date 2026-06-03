@@ -455,6 +455,19 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: Optional idempotency key for replay-safe contract-run start.
       requestBody:
         required: true
         content:
@@ -502,6 +515,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
       responses:
         "200":
           description: Contract run status
@@ -525,6 +544,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
       responses:
         "200":
           description: Next allowed step
@@ -568,6 +593,19 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: Optional idempotency key for replay-safe step execution.
       requestBody:
         required: true
         content:
@@ -586,7 +624,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/ContractRunStepExecutionResponse"
         "403":
           description: Policy or guard denial (`connector_override_forbidden`, `operation_not_allowed`, `human_gate_required`, connector guard denial)
           content:
@@ -633,6 +671,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
       responses:
         "200":
           description: Human gate state
@@ -683,6 +727,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
       requestBody:
         required: true
         content:
@@ -718,6 +768,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-MOVA-API-KEY
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Required public API key for contract-run runtime access.
       responses:
         "200":
           description: Contract-run evidence
@@ -939,7 +995,6 @@ components:
         - request_id
         - actor
         - source
-        - auth_context
         - inputs
         - context
         - correlation
@@ -969,8 +1024,6 @@ components:
               type: string
             client_id:
               type: string
-        auth_context:
-          $ref: "#/components/schemas/AuthContext"
         inputs:
           type: object
         context:
@@ -985,6 +1038,7 @@ components:
       required:
         - run_id
         - contract_id
+        - tenant_id
         - status
         - current_step_id
         - trace_ref
@@ -994,6 +1048,8 @@ components:
         run_id:
           type: string
         contract_id:
+          type: string
+        tenant_id:
           type: string
         status:
           type: string
@@ -1014,10 +1070,60 @@ components:
         observation_count:
           type: integer
           minimum: 0
+        idempotency_key:
+          type: string
+          nullable: true
+        idempotent_replay:
+          type: boolean
         gate:
           allOf:
             - $ref: "#/components/schemas/HumanGate"
           nullable: true
+    ContractRunStepExecutionResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - contract_id
+        - tenant_id
+        - step_id
+        - operation_id
+        - status
+        - next_step_id
+        - current_step_id
+        - trace_ref
+        - observation_count
+        - policy_summary
+      properties:
+        run_id:
+          type: string
+        contract_id:
+          type: string
+        tenant_id:
+          type: string
+        step_id:
+          type: string
+        operation_id:
+          type: string
+        status:
+          type: string
+        next_step_id:
+          type: string
+        current_step_id:
+          type: string
+        next_allowed_operation_id:
+          type: string
+          nullable: true
+        trace_ref:
+          type: string
+        observation_count:
+          type: integer
+          minimum: 0
+        idempotency_key:
+          type: string
+          nullable: true
+        policy_summary:
+          $ref: "#/components/schemas/PolicySummary"
     ContractStep:
       type: object
       additionalProperties: false
@@ -1198,6 +1304,7 @@ components:
       required:
         - run_id
         - contract_id
+        - tenant_id
         - status
         - result
         - evidence
@@ -1208,6 +1315,8 @@ components:
         run_id:
           type: string
         contract_id:
+          type: string
+        tenant_id:
           type: string
         status:
           type: string
@@ -1228,6 +1337,7 @@ components:
             - gates
             - transitions
             - transition_failures
+            - idempotency_key
           properties:
             steps:
               type: array
@@ -1414,6 +1524,9 @@ components:
                     type: string
                   message:
                     type: string
+            idempotency_key:
+              type: string
+              nullable: true
         trace_ref:
           type: string
         observation_refs:

@@ -5,6 +5,7 @@
   "required": [
     "run_id",
     "contract_id",
+    "tenant_id",
     "status",
     "result",
     "evidence",
@@ -15,6 +16,7 @@
   "properties": {
     "run_id": { "type": "string" },
     "contract_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
     "status": {
       "type": "string",
       "enum": ["accepted", "in_progress", "waiting_review", "completed", "failed", "blocked"]
@@ -23,7 +25,7 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["steps", "gates", "transitions", "transition_failures"],
+      "required": ["steps", "gates", "transitions", "transition_failures", "idempotency_key"],
       "properties": {
         "steps": {
           "type": "array",
@@ -180,7 +182,8 @@
               "message": { "type": "string" }
             }
           }
-        }
+        },
+        "idempotency_key": { "type": ["string", "null"] }
       }
     },
     "trace_ref": { "type": "string" },

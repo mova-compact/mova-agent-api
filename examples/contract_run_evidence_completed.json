@@ -1,6 +1,7 @@
 {
   "run_id": "contract_run_req_provider_001",
   "contract_id": "provider_connector_owner_report_v0",
+  "tenant_id": "tenant_server_owned",
   "status": "completed",
   "result": {},
   "evidence": {
@@ -47,7 +48,8 @@
         "reason_code": "COMPLETED"
       }
     ],
-    "transition_failures": []
+    "transition_failures": [],
+    "idempotency_key": "release-evidence-001"
   },
   "trace_ref": "trace_contract_001",
   "observation_refs": [],

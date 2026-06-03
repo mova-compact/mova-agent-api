@@ -1,6 +1,7 @@
 {
   "run_id": "contract_run_req_contract_001",
   "contract_id": "daily_owner_report_v0",
+  "tenant_id": "tenant_server_owned",
   "status": "failed",
   "result": {},
   "evidence": {
@@ -15,7 +16,8 @@
         "error_code": "transition_not_found",
         "message": "missing transition for step step_001 and outcome default"
       }
-    ]
+    ],
+    "idempotency_key": null
   },
   "trace_ref": "trace_contract_001",
   "observation_refs": [],

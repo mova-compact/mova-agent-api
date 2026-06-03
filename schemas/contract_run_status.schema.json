@@ -5,6 +5,7 @@
   "required": [
     "run_id",
     "contract_id",
+    "tenant_id",
     "status",
     "current_step_id",
     "trace_ref",
@@ -14,6 +15,7 @@
   "properties": {
     "run_id": { "type": "string" },
     "contract_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
     "status": {
       "type": "string",
       "enum": ["accepted", "in_progress", "waiting_review", "completed", "failed", "blocked"]
@@ -22,6 +24,8 @@
     "next_allowed_operation_id": { "type": ["string", "null"] },
     "trace_ref": { "type": "string" },
     "observation_count": { "type": "integer", "minimum": 0 },
+    "idempotency_key": { "type": ["string", "null"] },
+    "idempotent_replay": { "type": "boolean" },
     "gate": {
       "anyOf": [
         {

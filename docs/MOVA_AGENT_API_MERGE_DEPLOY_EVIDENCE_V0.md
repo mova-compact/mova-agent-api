@@ -126,3 +126,49 @@ Notes:
   - `PASS_WITH_WARNINGS`
   - provider connector registry is wired through contract-run corridor and Worker deploy surface
   - Telegram delivery is blocked only by missing Worker secrets, not by route, scope, or provider-dispatch mismatch
+
+## V0.1 public contract-run hardening pass
+- branch: `fix/cloudflare-contract-run-route-parity`
+- commit: `feat: harden v0.1 public contract-run surface`
+- deployed version: `48bca46a-3ab7-411f-af5b-6fceab12c64a`
+- release rows targeted: `R4 Replay Risk`, `R5 Secret Leakage Risk`
+- health: PASS
+- ready: PASS
+- capabilities: PASS
+- public auth:
+  - missing `X-MOVA-API-KEY` -> `401`
+  - invalid `X-MOVA-API-KEY` -> `403`
+  - valid key works on live contract-run routes
+- public ownership:
+  - live start returns `tenant_id=tenant_server_owned`
+  - live evidence returns `tenant_id=tenant_server_owned`
+  - client `context.tenant_id` remains forbidden
+- replay proof:
+  - live start with `Idempotency-Key: release-r45-start-001` -> `202`
+  - repeated live start with same key -> `202`, `idempotent_replay=true`
+  - native test proof: same step key replays same response, different key after completion -> `409 step_already_executed`
+- secret leakage proof:
+  - public evidence now includes `tenant_id`
+  - public evidence now includes `evidence.idempotency_key`
+  - public evidence still excludes Telegram token, `chat_id`, and raw provider URL with secret
+- live contract-run start:
+  - `POST /contracts/provider_connector_owner_report_v0/runs` -> `202`
+  - `run_id=contract_run_idem_release-r45-start-001`
+- live contract-run status:
+  - `GET /contract-runs/contract_run_idem_release-r45-start-001` -> `200`
+- live contract-run next:
+  - `GET /contract-runs/contract_run_idem_release-r45-start-001/next` -> `200`
+  - `allowed_connector_id=provider.connector.v1`
+  - `constraints.connector_ref=telegram.owner_report_channel`
+- live contract-run execute:
+  - `POST /contract-runs/contract_run_idem_release-r45-start-001/steps/send_owner_report/execute` -> `503`
+  - wrapper error: `connector_execution_failed`
+  - connector detail: `connector_secret_missing`
+- live contract-run evidence:
+  - `GET /contract-runs/contract_run_idem_release-r45-start-001/evidence` -> `200`
+  - evidence payload exposes `tenant_id` and `evidence.idempotency_key=release-r45-start-001`
+- verdict:
+  - `PASS_WITH_WARNINGS`
+  - `R4` closed for public release surface with native tests + live start replay proof
+  - `R5` closed for public release surface
+  - `R7` remains blocked by missing Cloudflare Telegram secrets

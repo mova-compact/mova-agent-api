@@ -58,6 +58,10 @@ fn public_contract_run_start_body() -> String {
     .to_string()
 }
 
+fn public_api_key() -> String {
+    std::env::var("MOVA_API_KEY").unwrap_or_else(|_| "mova-dev-key".to_string())
+}
+
 fn provider_execute_body(operation_id: &str, text: &str) -> String {
     json!({
         "operation_id": operation_id,
@@ -543,7 +547,7 @@ async fn public_contract_run_accepts_valid_api_key_and_assigns_server_tenant() {
                 .method(Method::POST)
                 .uri("/contracts/daily_owner_report_v0/runs")
                 .header("content-type", "application/json")
-                .header("x-mova-api-key", "mova-dev-key")
+                .header("x-mova-api-key", public_api_key())
                 .body(Body::from(public_contract_run_start_body()))
                 .unwrap(),
         )
@@ -560,7 +564,7 @@ async fn public_contract_run_accepts_valid_api_key_and_assigns_server_tenant() {
             Request::builder()
                 .method(Method::GET)
                 .uri(format!("/contract-runs/{run_id}"))
-                .header("x-mova-api-key", "mova-dev-key")
+                .header("x-mova-api-key", public_api_key())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -573,6 +577,50 @@ async fn public_contract_run_accepts_valid_api_key_and_assigns_server_tenant() {
 }
 
 #[tokio::test]
+async fn public_contract_run_start_replays_same_idempotency_key() {
+    let app = public_router();
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-start-001")
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first_body = to_bytes(first.into_body(), usize::MAX).await.unwrap();
+    let first_json: Value = serde_json::from_slice(&first_body).unwrap();
+    assert_eq!(first_json["tenant_id"], "tenant_server_owned");
+    assert_eq!(first_json["idempotency_key"], "release-start-001");
+
+    let replay = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/daily_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-start-001")
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::ACCEPTED);
+    let replay_body = to_bytes(replay.into_body(), usize::MAX).await.unwrap();
+    let replay_json: Value = serde_json::from_slice(&replay_body).unwrap();
+    assert_eq!(replay_json["run_id"], first_json["run_id"]);
+    assert_eq!(replay_json["tenant_id"], "tenant_server_owned");
+    assert_eq!(replay_json["idempotent_replay"], true);
+}
+
+#[tokio::test]
 async fn public_contract_run_rejects_client_tenant_override() {
     let app = public_router();
     let response = app
@@ -581,7 +629,7 @@ async fn public_contract_run_rejects_client_tenant_override() {
                 .method(Method::POST)
                 .uri("/contracts/daily_owner_report_v0/runs")
                 .header("content-type", "application/json")
-                .header("x-mova-api-key", "mova-dev-key")
+                .header("x-mova-api-key", public_api_key())
                 .body(Body::from(
                     json!({
                         "request_id": "req_contract_public_002",
@@ -602,6 +650,158 @@ async fn public_contract_run_rejects_client_tenant_override() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn public_contract_run_step_execute_replays_same_idempotency_key_and_blocks_second_key() {
+    let app = public_router();
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap();
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-step-001")
+                .body(Body::from(provider_execute_body(
+                    "op_send_owner_report",
+                    "release replay proof",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first_body = to_bytes(first.into_body(), usize::MAX).await.unwrap();
+    let first_json: Value = serde_json::from_slice(&first_body).unwrap();
+    assert_eq!(first_json["tenant_id"], "tenant_server_owned");
+    assert_eq!(first_json["idempotency_key"], "release-step-001");
+
+    let replay = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-step-001")
+                .body(Body::from(provider_execute_body(
+                    "op_send_owner_report",
+                    "release replay proof",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::ACCEPTED);
+    let replay_body = to_bytes(replay.into_body(), usize::MAX).await.unwrap();
+    let replay_json: Value = serde_json::from_slice(&replay_body).unwrap();
+    assert_eq!(replay_json, first_json);
+
+    let conflict = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-step-002")
+                .body(Body::from(provider_execute_body(
+                    "op_send_owner_report",
+                    "release replay proof",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let conflict_body = to_bytes(conflict.into_body(), usize::MAX).await.unwrap();
+    let conflict_json: Value = serde_json::from_slice(&conflict_body).unwrap();
+    assert_eq!(conflict_json["error"]["code"], "step_already_executed");
+}
+
+#[tokio::test]
+async fn public_contract_run_evidence_exposes_server_tenant_and_idempotency_without_secrets() {
+    let app = public_router();
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap();
+
+    let execute = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .header("idempotency-key", "release-evidence-001")
+                .body(Body::from(provider_execute_body(
+                    "op_send_owner_report",
+                    "release evidence proof",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::ACCEPTED);
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/evidence"))
+                .header("x-mova-api-key", public_api_key())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.status(), StatusCode::OK);
+    let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(evidence_json["tenant_id"], "tenant_server_owned");
+    assert_eq!(evidence_json["evidence"]["idempotency_key"], "release-evidence-001");
+    let serialized = evidence_json.to_string();
+    assert!(!serialized.contains("chat_id"));
+    assert!(!serialized.contains("bot_token"));
+    assert!(!serialized.contains("TELEGRAM_BOT_TOKEN"));
+    assert!(!serialized.contains("api.telegram.org"));
 }
 
 #[tokio::test]

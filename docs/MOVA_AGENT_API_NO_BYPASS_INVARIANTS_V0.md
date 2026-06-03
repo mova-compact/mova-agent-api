@@ -39,6 +39,10 @@
 35. Agent never submits `bot_token`, `token`, `chat_id`, `secret_ref`, `secret_refs`, `token_secret_ref`, `chat_id_secret_ref`, `provider_url`, or `telegram_url`.
 36. `connector_ref` resolves only from provider connector registry, never from client override.
 37. Telegram is only the first provider adapter behind provider connector proxy; contract-run runtime does not own a Telegram special case.
+38. Public contract-run runtime derives `auth_context` from `X-MOVA-API-KEY`; client cannot self-assign runtime scopes there.
+39. Public contract-run runtime assigns `tenant_id` server-side; client cannot override `context.tenant_id`.
+40. Completed contract-run step cannot execute twice with a different `Idempotency-Key`.
+41. Public evidence may include `tenant_id` and `idempotency_key`, but must not include provider secrets, `chat_id`, or provider URL with embedded secrets.
 
 ## Known V0 limitation
 
