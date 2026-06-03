@@ -44,6 +44,7 @@ Controlled contract-run corridor:
 - V0 planning / skeleton
 - flat action path and controlled contract-run corridor available as local V0 behavior
 - contract-run connector_action steps execute through guarded `ConnectorExecutor` boundary
+- contract-run transitions are resolved from admitted contract `flow.next`
 - no legacy implementation copied here
 
 ## Source of truth rule

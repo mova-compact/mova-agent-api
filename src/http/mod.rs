@@ -7,7 +7,8 @@ use crate::connectors::{
     ConnectorExecutor, SideEffectIntent,
 };
 use crate::contract_run::{
-    default_gate, fixture_steps, ContractRunRequest, ContractRunState, ContractRunStatus,
+    contract_steps_from_flow, gate_for_step, resolve_flow_transition, ContractRunRequest,
+    ContractRunState, ContractRunStatus, ContractStepOutcome, ContractTransition,
     ContractRunStatusResponse as CorridorRunStatusResponse,
 };
 use crate::contract_step::{ContractStepStatus, ContractStepType};
@@ -1206,6 +1207,7 @@ fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, Admitte
             {
                 "id": "step_001",
                 "step_type": "connector_action",
+                "operation_id": "op_notify_webhook",
                 "execution_mode": "DETERMINISTIC",
                 "connector": {
                     "name":"connector.http.generic.v1",
@@ -1218,6 +1220,7 @@ fn seed_default_contracts(admitted_contracts: &Arc<Mutex<HashMap<String, Admitte
             {
                 "id": "step_002",
                 "step_type": "human_gate",
+                "operation_id": "op_send_report",
                 "execution_mode": "HUMAN_GATE",
                 "next": {
                     "approve": {"step":"step_003"},
@@ -1578,6 +1581,107 @@ fn contains_forbidden_connector_override(value: &Value) -> bool {
         .any(|key| object.contains_key(*key))
 }
 
+fn set_step_status(run_state: &mut ContractRunState, step_id: &str, status: ContractStepStatus) {
+    if let Some(step) = run_state.steps.iter_mut().find(|step| step.step_id == step_id) {
+        step.status = status;
+    }
+}
+
+fn step_by_id<'a>(run_state: &'a ContractRunState, step_id: &str) -> Option<&'a crate::contract_step::ContractStep> {
+    run_state.steps.iter().find(|step| step.step_id == step_id)
+}
+
+fn transition_trace_json(
+    from_step_id: &str,
+    outcome: ContractStepOutcome,
+    transition: &ContractTransition,
+    reason_code: &str,
+) -> Value {
+    match transition {
+        ContractTransition::NextStep { step_id } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "next_step",
+                "target_step_id": step_id,
+                "terminal_status": Value::Null
+            },
+            "reason_code": reason_code
+        }),
+        ContractTransition::Terminal { status, .. } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "terminal",
+                "target_step_id": Value::Null,
+                "terminal_status": status.as_str()
+            },
+            "reason_code": reason_code
+        }),
+        ContractTransition::Blocked { .. } => json!({
+            "from_step_id": from_step_id,
+            "outcome": outcome.as_flow_key(),
+            "transition": {
+                "kind": "blocked",
+                "target_step_id": Value::Null,
+                "terminal_status": "blocked"
+            },
+            "reason_code": reason_code
+        }),
+    }
+}
+
+fn apply_transition_to_run_state(
+    run_state: &mut ContractRunState,
+    transition: &ContractTransition,
+) -> Result<(), ApiError> {
+    match transition {
+        ContractTransition::NextStep { step_id } => {
+            let next_step = step_by_id(run_state, step_id).cloned().ok_or(ApiError {
+                code: "contract_step_not_found".to_string(),
+                message: "transition target step was not found".to_string(),
+                details: vec![format!("step_id: {step_id}")],
+            })?;
+            run_state.current_step_id = step_id.clone();
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+            match next_step.step_type {
+                ContractStepType::HumanGate => {
+                    run_state.status = ContractRunStatus::WaitingReview;
+                    run_state.next_allowed_operation_id = next_step.operation_id.clone();
+                    set_step_status(run_state, step_id, ContractStepStatus::WaitingReview);
+                    let gate = gate_for_step(&run_state.run_id, &next_step);
+                    run_state.current_gate_id = Some(gate.gate_id.clone());
+                    run_state.gate = Some(gate);
+                }
+                ContractStepType::ConnectorAction | ContractStepType::DeterministicAction => {
+                    run_state.status = ContractRunStatus::InProgress;
+                    run_state.next_allowed_operation_id = next_step.operation_id.clone();
+                    set_step_status(run_state, step_id, ContractStepStatus::Ready);
+                }
+                ContractStepType::Terminal => {
+                    run_state.status = ContractRunStatus::Completed;
+                    run_state.next_allowed_operation_id = None;
+                    set_step_status(run_state, step_id, ContractStepStatus::Completed);
+                }
+            }
+        }
+        ContractTransition::Terminal { status, .. } => {
+            run_state.status = *status;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+        }
+        ContractTransition::Blocked { .. } => {
+            run_state.status = ContractRunStatus::Blocked;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+        }
+    }
+    Ok(())
+}
+
 fn append_contract_run_observation(
     state: &AppState,
     run_id: &str,
@@ -1669,26 +1773,44 @@ async fn post_contract_run_start(
         .and_then(|value| value.as_str())
         .unwrap_or("trace_contract_001")
         .to_string();
+    let admitted_contract = _contract.expect("checked above");
+    let steps = match contract_steps_from_flow(&admitted_contract) {
+        Ok(steps) => steps,
+        Err(err) => {
+            return bad_request(&err.code, "contract flow is invalid", vec![err.message]).into_response();
+        }
+    };
+    let entry_step = match steps.iter().find(|step| step.step_id == admitted_contract.flow.entry) {
+        Some(step) => step.clone(),
+        None => {
+            return bad_request(
+                "contract_flow_invalid",
+                "contract flow entry step was not found",
+                vec![format!("entry: {}", admitted_contract.flow.entry)],
+            )
+            .into_response();
+        }
+    };
     let mut run_state = ContractRunState {
         run_id: run_id.clone(),
         contract_id: contract_id.clone(),
         status: ContractRunStatus::Accepted,
         auth_context: request.auth_context.clone(),
-        current_step_id: "step_001".to_string(),
-        next_allowed_operation_id: Some("op_notify_webhook".to_string()),
+        current_step_id: admitted_contract.flow.entry.clone(),
+        next_allowed_operation_id: entry_step.operation_id.clone(),
         completed_step_ids: Vec::new(),
         current_gate_id: None,
         trace_ref: trace_ref.clone(),
         observation_count: 0,
         created_at: "2026-05-23T08:30:00Z".to_string(),
         updated_at: "2026-05-23T08:30:00Z".to_string(),
-        steps: fixture_steps(),
+        steps,
         gate: None,
         last_admission: None,
     };
     let admission = build_current_operation_admission(
         &run_state,
-        _contract.as_ref(),
+        Some(&admitted_contract),
         state.auth_verifier.as_ref(),
     );
     run_state.last_admission = Some(admission);
@@ -1697,7 +1819,7 @@ async fn post_contract_run_start(
         &run_id,
         ObservationRecord {
             run_id: run_id.clone(),
-            step_id: "step_001".to_string(),
+            step_id: run_state.current_step_id.clone(),
             event_type: "contract_run.started".to_string(),
             timestamp: "2026-05-23T08:30:00Z".to_string(),
             subject: json!({"contract_id": contract_id, "actor_id": request.actor.actor_id}),
@@ -1931,9 +2053,25 @@ async fn post_contract_run_step_execute(
 
     let step = current_contract_step(&run_state).expect("current step must exist");
     let admitted_contract = admitted_contract_for_run(&state, &run_state);
+    let admitted_contract_ref = match admitted_contract.as_ref() {
+        Some(contract) => contract,
+        None => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "contract_not_found".to_string(),
+                        message: "admitted contract for run was not found".to_string(),
+                        details: vec![format!("contract_id: {}", run_state.contract_id)],
+                    },
+                }),
+            )
+                .into_response()
+        }
+    };
     let admission = build_current_operation_admission(
         &run_state,
-        admitted_contract.as_ref(),
+        Some(admitted_contract_ref),
         state.auth_verifier.as_ref(),
     );
     if admission.decision != AdmissionDecision::Allow {
@@ -2053,27 +2191,56 @@ async fn post_contract_run_step_execute(
             item.status = ContractStepStatus::Completed;
         }
     }
-    run_state.completed_step_ids.push(run_state.current_step_id.clone());
-
-    if step.step_id == "step_001" {
-        run_state.status = ContractRunStatus::WaitingReview;
-        run_state.current_step_id = "step_002".to_string();
-        run_state.next_allowed_operation_id = Some("op_send_report".to_string());
-        if let Some(item) = run_state.steps.iter_mut().find(|item| item.step_id == "step_002") {
-            item.status = ContractStepStatus::WaitingReview;
-        }
-        let gate = default_gate(&run_state.run_id);
-        run_state.current_gate_id = Some(gate.gate_id.clone());
-        run_state.gate = Some(gate);
+    let executed_step_id = run_state.current_step_id.clone();
+    run_state.completed_step_ids.push(executed_step_id.clone());
+    let outcome = if step.step_type == ContractStepType::HumanGate {
+        ContractStepOutcome::Approve
     } else {
-        run_state.status = ContractRunStatus::Completed;
-        run_state.current_step_id = "step_003".to_string();
-        run_state.next_allowed_operation_id = None;
-        run_state.current_gate_id = None;
-        if let Some(item) = run_state.steps.iter_mut().find(|item| item.step_id == "step_003") {
-            item.status = ContractStepStatus::Completed;
+        ContractStepOutcome::Default
+    };
+    let transition = match resolve_flow_transition(admitted_contract_ref, &executed_step_id, outcome) {
+        Ok(transition) => transition,
+        Err(err) => {
+            run_state.status = ContractRunStatus::Failed;
+            run_state.next_allowed_operation_id = None;
+            run_state.current_gate_id = None;
+            run_state.gate = None;
+            run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
+            {
+                let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                runs.insert(run_id.clone(), run_state.clone());
+            }
+            let _ = persist_contract_run_snapshot(&state, &run_state).await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "transition_not_found".to_string(),
+                        message: "contract transition could not be resolved".to_string(),
+                        details: vec![err.message],
+                    },
+                }),
+            )
+                .into_response();
         }
-        run_state.gate = None;
+    };
+    let transition_reason_code = match &transition {
+        ContractTransition::NextStep { .. } => "TRANSITION_APPLIED".to_string(),
+        ContractTransition::Terminal { reason_code, .. } => reason_code.clone(),
+        ContractTransition::Blocked { reason_code } => reason_code.clone(),
+    };
+    if let Err(err) = apply_transition_to_run_state(&mut run_state, &transition) {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: err.code,
+                    message: err.message,
+                    details: vec![],
+                },
+            }),
+        )
+            .into_response();
     }
     run_state.updated_at = "2026-05-23T08:33:00Z".to_string();
     run_state.last_admission = Some(OperationAdmission {
@@ -2096,7 +2263,30 @@ async fn post_contract_run_step_execute(
         &run_state.run_id,
         ObservationRecord {
             run_id: run_state.run_id.clone(),
-            step_id: step.step_id.clone(),
+            step_id: executed_step_id.clone(),
+            event_type: "contract_run.transition_applied".to_string(),
+            timestamp: "2026-05-23T08:33:00Z".to_string(),
+            subject: json!({"operation_id": operation_id}),
+            result: transition_trace_json(
+                &executed_step_id,
+                outcome,
+                &transition,
+                &transition_reason_code,
+            )
+            .as_object()
+            .cloned()
+            .map(Value::Object)
+            .unwrap_or_else(|| json!({})),
+            metadata: json!({}),
+            evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+        },
+    );
+    run_state.observation_count = append_contract_run_observation(
+        &state,
+        &run_state.run_id,
+        ObservationRecord {
+            run_id: run_state.run_id.clone(),
+            step_id: executed_step_id.clone(),
             event_type: "contract_run.step_executed".to_string(),
             timestamp: "2026-05-23T08:33:00Z".to_string(),
             subject: json!({"operation_id": operation_id}),
@@ -2129,7 +2319,7 @@ async fn post_contract_run_step_execute(
         Json(json!({
             "run_id": run_state.run_id,
             "contract_id": run_state.contract_id,
-            "step_id": step.step_id,
+            "step_id": executed_step_id,
             "operation_id": operation_id,
             "status": "step_completed",
             "next_step_id": run_state.current_step_id,
@@ -2236,6 +2426,24 @@ async fn post_contract_run_gate_resolve(
                 .into_response()
         }
     };
+    let gate_step_id = gate.step_id.clone();
+    let admitted_contract = admitted_contract_for_run(&state, &run_state);
+    let admitted_contract_ref = match admitted_contract.as_ref() {
+        Some(contract) => contract,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: ApiError {
+                        code: "contract_not_found".to_string(),
+                        message: "admitted contract for run was not found".to_string(),
+                        details: vec![format!("contract_id: {}", run_state.contract_id)],
+                    },
+                }),
+            )
+                .into_response()
+        }
+    };
 
     let resolved_gate = HumanGate {
         status: HumanGateStatus::Resolved,
@@ -2254,8 +2462,13 @@ async fn post_contract_run_gate_resolve(
 
     if request.decision == HumanGateDecision::Approve {
         run_state.status = ContractRunStatus::InProgress;
-        run_state.next_allowed_operation_id = Some("op_send_report".to_string());
-        if let Some(step) = run_state.steps.iter_mut().find(|step| step.step_id == "step_002") {
+        run_state.next_allowed_operation_id = step_by_id(&run_state, &run_state.current_step_id)
+            .and_then(|step| step.operation_id.clone());
+        if let Some(step) = run_state
+            .steps
+            .iter_mut()
+            .find(|step| step.step_id == run_state.current_step_id)
+        {
             step.status = ContractStepStatus::Ready;
         }
         run_state.last_admission = Some(OperationAdmission {
@@ -2265,8 +2478,11 @@ async fn post_contract_run_gate_resolve(
             policy_version: "policy.default.v0".to_string(),
             contract_id: run_state.contract_id.clone(),
             run_id: run_state.run_id.clone(),
-            step_id: "step_002".to_string(),
-            operation_id: "op_send_report".to_string(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state
+                .next_allowed_operation_id
+                .clone()
+                .unwrap_or_else(|| "op_send_report".to_string()),
             allowed_connector_id: None,
             allowed_endpoint_ref: None,
             allowed_method: None,
@@ -2274,11 +2490,37 @@ async fn post_contract_run_gate_resolve(
             expires_at: None,
         });
     } else {
-        run_state.status = ContractRunStatus::Blocked;
-        run_state.next_allowed_operation_id = None;
-        if let Some(step) = run_state.steps.iter_mut().find(|step| step.step_id == "step_002") {
-            step.status = ContractStepStatus::Blocked;
-        }
+        let transition =
+            match resolve_flow_transition(admitted_contract_ref, &run_state.current_step_id, ContractStepOutcome::Reject)
+            {
+                Ok(transition) => transition,
+                Err(err) => {
+                    run_state.status = ContractRunStatus::Failed;
+                    run_state.next_allowed_operation_id = None;
+                    run_state.current_gate_id = None;
+                    run_state.gate = None;
+                    run_state.updated_at = "2026-05-23T08:32:00Z".to_string();
+                    {
+                        let mut runs = state.contract_runs.lock().expect("contract run lock poisoned");
+                        runs.insert(run_id.clone(), run_state.clone());
+                    }
+                    let _ = persist_contract_run_snapshot(&state, &run_state).await;
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorResponse {
+                            error: ApiError {
+                                code: "transition_not_found".to_string(),
+                                message: "contract transition could not be resolved".to_string(),
+                                details: vec![err.message],
+                            },
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+        let current_step_id = run_state.current_step_id.clone();
+        set_step_status(&mut run_state, &current_step_id, ContractStepStatus::Blocked);
+        let _ = apply_transition_to_run_state(&mut run_state, &transition);
         run_state.last_admission = Some(OperationAdmission {
             admission_id: format!("adm_gate_{}", run_state.run_id),
             decision: AdmissionDecision::Deny,
@@ -2286,14 +2528,40 @@ async fn post_contract_run_gate_resolve(
             policy_version: "policy.default.v0".to_string(),
             contract_id: run_state.contract_id.clone(),
             run_id: run_state.run_id.clone(),
-            step_id: "step_002".to_string(),
-            operation_id: "op_send_report".to_string(),
+            step_id: run_state.current_step_id.clone(),
+            operation_id: run_state
+                .next_allowed_operation_id
+                .clone()
+                .unwrap_or_else(|| "op_send_report".to_string()),
             allowed_connector_id: None,
             allowed_endpoint_ref: None,
             allowed_method: None,
             constraints: json!({}),
             expires_at: None,
         });
+        run_state.observation_count = append_contract_run_observation(
+            &state,
+            &run_state.run_id,
+            ObservationRecord {
+                run_id: run_state.run_id.clone(),
+                step_id: gate_step_id.clone(),
+                event_type: "contract_run.transition_applied".to_string(),
+                timestamp: "2026-05-23T08:32:00Z".to_string(),
+                subject: json!({"gate_id": gate_id}),
+                result: transition_trace_json(
+                    &gate_step_id,
+                    ContractStepOutcome::Reject,
+                    &transition,
+                    "TRANSITION_APPLIED",
+                )
+                .as_object()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or_else(|| json!({})),
+                metadata: json!({}),
+                evidence_ref: format!("ev_{}_{}", run_state.run_id, run_state.observation_count + 1),
+            },
+        );
     }
 
     run_state.gate = Some(resolved_gate.clone());
@@ -2399,6 +2667,35 @@ async fn get_contract_run_evidence(
             })
         })
         .collect::<Vec<_>>();
+    let transitions = observations
+        .iter()
+        .filter(|record| record.event_type == "contract_run.transition_applied")
+        .map(|record| {
+            json!({
+                "from_step_id": record.result.get("from_step_id").cloned().unwrap_or(Value::Null),
+                "outcome": record.result.get("outcome").cloned().unwrap_or(Value::Null),
+                "kind": record
+                    .result
+                    .get("transition")
+                    .and_then(|value| value.get("kind"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "target_step_id": record
+                    .result
+                    .get("transition")
+                    .and_then(|value| value.get("target_step_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "terminal_status": record
+                    .result
+                    .get("transition")
+                    .and_then(|value| value.get("terminal_status"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "reason_code": record.result.get("reason_code").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect::<Vec<_>>();
     let gates = observations
         .iter()
         .filter(|record| record.event_type == "contract_run.gate_resolved")
@@ -2419,6 +2716,7 @@ async fn get_contract_run_evidence(
         &observations,
         json!(steps),
         json!(gates),
+        json!(transitions),
         contract_run_policy_summary(run_state.last_admission.as_ref()),
     );
     (StatusCode::OK, Json(response)).into_response()

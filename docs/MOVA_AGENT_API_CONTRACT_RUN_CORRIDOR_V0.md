@@ -23,6 +23,13 @@ Contract-run step execution no longer fabricates connector results for `connecto
 For `connector_action` steps, execution builds `ConnectorExecutionRequest` from `OperationAdmission` and contract step metadata only.
 Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent`.
 
+## Flow-driven transitions
+
+Contract-run state no longer advances by fixture step ids.
+After each step, runtime resolves `flow.steps[].next` using deterministic outcome keys.
+Supported V0 outcomes: `default`, `approve`, `reject`.
+Supported V0 targets: next step, terminal completed, terminal blocked.
+
 ## Boundary verdict
 
 PASS_WITH_WARNINGS

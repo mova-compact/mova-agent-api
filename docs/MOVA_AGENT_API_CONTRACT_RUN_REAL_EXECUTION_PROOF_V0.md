@@ -7,6 +7,8 @@
 - operation admission observation added
 - nested connector override denied
 - evidence includes admission + connector summary
+- transition resolution now uses admitted contract `flow.next`
+- fixture-specific step id branching removed from contract-run execution path
 
 ## Commands run
 

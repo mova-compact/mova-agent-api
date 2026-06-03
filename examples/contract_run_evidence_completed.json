@@ -36,10 +36,28 @@
     ],
     "gates": [
       {
-        "gate_id": "gate_001",
+        "gate_id": "gate_contract_run_req_contract_001_step_002",
         "decision": "approve",
         "decided_by": "user_001",
         "reason_code": "HUMAN_GATE_APPROVED"
+      }
+    ],
+    "transitions": [
+      {
+        "from_step_id": "step_001",
+        "outcome": "default",
+        "kind": "next_step",
+        "target_step_id": "step_002",
+        "terminal_status": null,
+        "reason_code": "TRANSITION_APPLIED"
+      },
+      {
+        "from_step_id": "step_002",
+        "outcome": "approve",
+        "kind": "next_step",
+        "target_step_id": "step_003",
+        "terminal_status": null,
+        "reason_code": "TRANSITION_APPLIED"
       }
     ]
   },

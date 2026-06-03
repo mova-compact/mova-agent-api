@@ -1160,6 +1160,7 @@ components:
           required:
             - steps
             - gates
+            - transitions
           properties:
             steps:
               type: array
@@ -1189,6 +1190,33 @@ components:
               type: array
               items:
                 type: object
+            transitions:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - from_step_id
+                  - outcome
+                  - kind
+                  - target_step_id
+                  - terminal_status
+                  - reason_code
+                properties:
+                  from_step_id:
+                    type: string
+                  outcome:
+                    type: string
+                  kind:
+                    type: string
+                  target_step_id:
+                    type: string
+                    nullable: true
+                  terminal_status:
+                    type: string
+                    nullable: true
+                  reason_code:
+                    type: string
         trace_ref:
           type: string
         observation_refs:

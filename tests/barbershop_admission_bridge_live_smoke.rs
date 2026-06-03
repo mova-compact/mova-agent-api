@@ -61,7 +61,13 @@ async fn barbershop_bridge_live_smoke_e2e() {
         .unwrap();
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json: Value = serde_json::from_slice(&to_bytes(list_response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(list_json["contracts"][0]["contract_id"], "barbershop.owner_report.daily.v0");
+    assert!(
+        list_json["contracts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["contract_id"] == "barbershop.owner_report.daily.v0")
+    );
 
     let inspect_response = app
         .clone()

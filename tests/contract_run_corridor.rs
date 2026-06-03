@@ -52,6 +52,45 @@ fn resolve_body(decision: &str) -> String {
     .to_string()
 }
 
+fn alpha_contract_flow() -> Value {
+    json!({
+        "version": "1.0",
+        "description": "alpha flow",
+        "entry": "alpha_start",
+        "steps": [
+            {
+                "id": "alpha_start",
+                "operation_id": "op_notify_webhook",
+                "step_type": "connector_action",
+                "execution_mode": "DETERMINISTIC",
+                "connector": {
+                    "name": "connector.http.generic.v1",
+                    "endpoint_ref": "webhook_site_test",
+                    "method": "POST",
+                    "side_effect_intent": "external_network"
+                },
+                "next": {"default": {"step": "alpha_gate"}}
+            },
+            {
+                "id": "alpha_gate",
+                "operation_id": "op_send_report",
+                "step_type": "human_gate",
+                "execution_mode": "HUMAN_GATE",
+                "next": {
+                    "approve": {"step": "alpha_terminal"},
+                    "reject": {"terminal": "blocked"}
+                }
+            },
+            {
+                "id": "alpha_terminal",
+                "step_type": "terminal",
+                "execution_mode": "DETERMINISTIC",
+                "next": {"default": {"terminal": "completed"}}
+            }
+        ]
+    })
+}
+
 #[tokio::test]
 async fn contract_run_corridor_happy_path_completes_with_evidence() {
     let app = router();
@@ -72,6 +111,8 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
     let start_json: Value = serde_json::from_slice(&start_body).unwrap();
     let run_id = start_json["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start_json["current_step_id"], "step_001");
+    assert_eq!(start_json["next_allowed_operation_id"], "op_notify_webhook");
 
     let next = app
         .clone()
@@ -183,6 +224,7 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert_eq!(evidence_json["status"], "completed");
     assert!(evidence_json["evidence"]["steps"].as_array().unwrap().len() >= 1);
     assert!(evidence_json["evidence"]["gates"].as_array().unwrap().len() >= 1);
+    assert!(evidence_json["evidence"]["transitions"].as_array().unwrap().len() >= 2);
     let connector_summary = &evidence_json["evidence"]["steps"][0]["connector_summary"];
     assert_eq!(connector_summary["connector_id"], "connector.http.generic.v1");
     assert_eq!(connector_summary["endpoint_ref"], "webhook_site_test");
@@ -193,6 +235,14 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert_eq!(admission["allowed_connector_id"], "connector.http.generic.v1");
     assert_eq!(admission["allowed_endpoint_ref"], "webhook_site_test");
     assert_eq!(admission["allowed_method"], "POST");
+    let first_transition = &evidence_json["evidence"]["transitions"][0];
+    assert_eq!(first_transition["from_step_id"], "step_001");
+    assert_eq!(first_transition["outcome"], "default");
+    assert_eq!(first_transition["kind"], "next_step");
+    assert_eq!(first_transition["target_step_id"], "step_002");
+    let second_transition = &evidence_json["evidence"]["transitions"][1];
+    assert_eq!(second_transition["from_step_id"], "step_002");
+    assert_eq!(second_transition["outcome"], "approve");
 }
 
 #[tokio::test]
@@ -481,4 +531,195 @@ async fn contract_run_corridor_returns_bad_gateway_when_connector_executor_fails
         .await
         .unwrap();
     assert_eq!(execute.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn contract_run_corridor_uses_flow_driven_non_fixture_step_ids() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "alpha_contract_v0",
+        "execution_type": "agent",
+        "inline_flow_json": alpha_contract_flow()
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/alpha_contract_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start_json["current_step_id"], "alpha_start");
+    assert_eq!(start_json["next_allowed_operation_id"], "op_notify_webhook");
+
+    let execute_start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/alpha_start/execute"))
+                .header("content-type", "application/json")
+                .body(Body::from(execute_body("op_notify_webhook")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute_start.status(), StatusCode::ACCEPTED);
+
+    let gate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/gates/current"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let gate_body = to_bytes(gate.into_body(), usize::MAX).await.unwrap();
+    let gate_json: Value = serde_json::from_slice(&gate_body).unwrap();
+    assert_eq!(gate_json["step_id"], "alpha_gate");
+    let gate_id = gate_json["gate_id"].as_str().unwrap();
+
+    let approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/gates/{gate_id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(resolve_body("approve")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+
+    let execute_gate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/alpha_gate/execute"))
+                .header("content-type", "application/json")
+                .body(Body::from(execute_body("op_send_report")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute_gate.status(), StatusCode::ACCEPTED);
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/evidence"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
+    let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
+    assert_eq!(evidence_json["status"], "completed");
+    assert_eq!(evidence_json["evidence"]["transitions"][0]["target_step_id"], "alpha_gate");
+}
+
+#[tokio::test]
+async fn contract_run_corridor_fails_deterministically_on_missing_transition() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "broken_transition_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "broken flow",
+            "entry": "broken_start",
+            "steps": [
+                {
+                    "id": "broken_start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "external_network"
+                    },
+                    "next": {"approve": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/broken_transition_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap();
+
+    let execute = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/contract-runs/{run_id}/steps/broken_start/execute"))
+                .header("content-type", "application/json")
+                .body(Body::from(execute_body("op_notify_webhook")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::BAD_GATEWAY);
+    let execute_body_json = to_bytes(execute.into_body(), usize::MAX).await.unwrap();
+    let execute_json: Value = serde_json::from_slice(&execute_body_json).unwrap();
+    assert_eq!(execute_json["error"]["code"], "transition_not_found");
 }

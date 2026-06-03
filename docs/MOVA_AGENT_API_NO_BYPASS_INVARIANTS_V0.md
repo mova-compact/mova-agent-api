@@ -21,6 +21,10 @@
 17. Connector execution request is built only from `OperationAdmission` and contract step metadata.
 18. Every allowed `connector_action` has `contract_run.operation_admitted` observation before side effect.
 19. Every `connector_action` evidence includes connector summary and admission summary.
+20. Agent never selects transition target.
+21. Transition target is resolved only from admitted contract `flow.next`.
+22. Client-provided next step is forbidden.
+23. Missing transition fails deterministically.
 
 ## Known V0 limitation
 

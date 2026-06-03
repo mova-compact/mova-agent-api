@@ -11,6 +11,8 @@ pub struct ContractFlowStep {
     pub id: String,
     #[serde(default)]
     pub step_type: Option<String>,
+    #[serde(default)]
+    pub operation_id: Option<String>,
     pub execution_mode: String,
     pub next: Value,
     #[serde(default)]
@@ -311,10 +313,11 @@ mod tests {
                 entry: "start".to_string(),
                 steps: vec![ContractFlowStep {
                     id: "start".to_string(),
-                    step_type: None,
-                    execution_mode: "DETERMINISTIC".to_string(),
-                    next: json!({"default": {"terminal": "completed"}}),
-                    connector: None,
+                step_type: None,
+                operation_id: None,
+                execution_mode: "DETERMINISTIC".to_string(),
+                next: json!({"default": {"terminal": "completed"}}),
+                connector: None,
                 }],
             },
         };
@@ -335,6 +338,7 @@ mod tests {
             steps: vec![ContractFlowStep {
                 id: "start".to_string(),
                 step_type: None,
+                operation_id: None,
                 execution_mode: "DETERMINISTIC".to_string(),
                 next: json!({"default": {"step": "missing"}}),
                 connector: None,
