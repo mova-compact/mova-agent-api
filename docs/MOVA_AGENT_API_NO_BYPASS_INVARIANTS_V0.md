@@ -31,6 +31,8 @@
 27. Gate evidence must preserve the actual flow step id.
 28. Broken transition targets are rejected during contract admission.
 29. Transition failure is recorded before error response.
+30. Contract-run `connector_action` allows only `none`, `local_only`, or `external_network` side-effect intent.
+31. `destructive` side-effect intent remains forbidden in contract-run corridor V0.
 
 ## Known V0 limitation
 

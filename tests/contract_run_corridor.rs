@@ -901,3 +901,152 @@ async fn contract_run_corridor_registration_rejects_missing_connector_metadata()
     let register_json: Value = serde_json::from_slice(&register_body).unwrap();
     assert_eq!(register_json["error"]["code"], "contract_connector_metadata_missing");
 }
+
+#[tokio::test]
+async fn contract_run_corridor_registration_accepts_local_only_side_effect_intent() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "local_only_side_effect_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "local only side effect",
+            "entry": "local_start",
+            "steps": [
+                {
+                    "id": "local_start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "local_only"
+                    },
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+
+    let start = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/local_only_side_effect_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_destructive_side_effect_intent() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "destructive_side_effect_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "destructive side effect",
+            "entry": "start",
+            "steps": [
+                {
+                    "id": "start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "destructive"
+                    },
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_connector_metadata_missing");
+    assert!(register_json["error"]["details"][0]
+        .as_str()
+        .unwrap_or_default()
+        .contains("allowed values: none, local_only, external_network"));
+}
+
+#[tokio::test]
+async fn contract_run_corridor_registration_rejects_unknown_side_effect_intent() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "unknown_side_effect_v0",
+        "execution_type": "agent",
+        "inline_flow_json": {
+            "version": "1.0",
+            "description": "unknown side effect",
+            "entry": "start",
+            "steps": [
+                {
+                    "id": "start",
+                    "operation_id": "op_notify_webhook",
+                    "step_type": "connector_action",
+                    "execution_mode": "DETERMINISTIC",
+                    "connector": {
+                        "name": "connector.http.generic.v1",
+                        "endpoint_ref": "webhook_site_test",
+                        "method": "POST",
+                        "side_effect_intent": "external_magic"
+                    },
+                    "next": {"default": {"terminal": "completed"}}
+                }
+            ]
+        }
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::BAD_REQUEST);
+    let register_body = to_bytes(register.into_body(), usize::MAX).await.unwrap();
+    let register_json: Value = serde_json::from_slice(&register_body).unwrap();
+    assert_eq!(register_json["error"]["code"], "contract_connector_metadata_missing");
+}

@@ -22,6 +22,8 @@
 Contract-run step execution no longer fabricates connector results for `connector_action` steps.
 For `connector_action` steps, execution builds `ConnectorExecutionRequest` from `OperationAdmission` and contract step metadata only.
 Client payload cannot override `connector_id`, `endpoint_ref`, `method`, `target_url`, or `side_effect_intent`.
+Contract-run `connector_action` V0 allows `side_effect_intent`: `none`, `local_only`, `external_network`.
+`destructive` remains denied.
 
 ## Flow-driven transitions
 

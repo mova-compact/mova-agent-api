@@ -5,6 +5,7 @@
 - removed fixture step id leakage from gate evidence
 - removed implicit `operation_id` fallback for executable steps
 - added contract-run flow validation before registration and run start
+- contract-run connector validation allows `none`, `local_only`, `external_network`
 - added duplicate step, missing entry, and missing transition target validation
 - added transition failure evidence
 - removed `resolved_url` from public evidence
@@ -30,3 +31,4 @@ PASS_WITH_WARNINGS
 - no dynamic routing
 - no autonomous planning
 - no provider marketplace
+- `destructive` side_effect_intent remains forbidden in contract-run corridor V0

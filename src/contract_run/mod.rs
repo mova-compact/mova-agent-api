@@ -231,11 +231,11 @@ fn validate_connector_metadata(admitted_contract: &AdmittedContract) -> Result<(
             .get("side_effect_intent")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        if !matches!(side_effect_intent, "none" | "external_network") {
+        if !matches!(side_effect_intent, "none" | "local_only" | "external_network") {
             return Err(ContractRunDomainError::new(
                 "contract_connector_metadata_missing",
                 format!(
-                    "connector_action step {} has unknown connector.side_effect_intent {}",
+                    "connector_action step {} has invalid connector.side_effect_intent {} (allowed values: none, local_only, external_network)",
                     step.id, side_effect_intent
                 ),
             ));

@@ -1244,6 +1244,7 @@ components:
                             type: string
                           side_effect_intent:
                             type: string
+                            description: Contract-run validation allows `none`, `local_only`, `external_network`; `destructive` is rejected.
                           connector_status:
                             type: string
                           provider:
