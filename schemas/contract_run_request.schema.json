@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "actor",
+    "source",
+    "auth_context",
+    "inputs",
+    "context",
+    "correlation",
+    "timestamps"
+  ],
+  "properties": {
+    "request_id": { "type": "string" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "type": "string" },
+        "actor_id": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "client_id"],
+      "properties": {
+        "channel": { "type": "string" },
+        "client_id": { "type": "string" }
+      }
+    },
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "scopes", "source", "verified"],
+      "properties": {
+        "mode": { "type": "string" },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source": { "type": "string" },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "inputs": { "type": "object" },
+    "context": { "type": "object" },
+    "correlation": { "type": "object" },
+    "timestamps": { "type": "object" }
+  }
+}

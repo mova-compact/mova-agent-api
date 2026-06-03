@@ -1,0 +1,23 @@
+# MOVA Agent API No-Bypass Invariants V0
+
+## Active invariants
+
+1. Agent never receives provider credentials.
+2. Agent never submits raw URL for external execution.
+3. Agent never selects arbitrary connector.
+4. Agent never selects next step in a contract run.
+5. Agent never executes operation outside current admitted step.
+6. Agent never executes destructive action in V0.
+7. Every side effect must pass through connector side-effect guard.
+8. Every side effect must produce observation and evidence.
+9. Every external endpoint must resolve from runtime allowlist / endpoint_ref.
+10. Every human-gated action must stop until gate is resolved.
+11. Gate resolution must be recorded in evidence.
+12. Transport never owns final authorization.
+13. Connector never owns authorization.
+14. Policy never becomes planner/orchestrator.
+15. Contract-run state never becomes autonomous agent logic.
+
+## Known V0 limitation
+
+Contract-run corridor in V0 uses fixture/static contract definitions. It does not yet load arbitrary MOVA contract packages from external stores.

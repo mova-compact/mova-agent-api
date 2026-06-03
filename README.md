@@ -14,6 +14,16 @@ Canonical execution path:
 - observation write
 - evidence response
 
+Controlled contract-run corridor:
+
+- agent starts contract
+- contract run state
+- next allowed step
+- operation admission
+- guarded connector execution
+- observation
+- evidence
+
 ## What it is
 
 - a product boundary for controlled agent actions
@@ -32,7 +42,7 @@ Canonical execution path:
 ## Current status
 
 - V0 planning / skeleton
-- no runtime behavior yet
+- flat action path and controlled contract-run corridor available as local V0 behavior
 - no legacy implementation copied here
 
 ## Source of truth rule
@@ -59,5 +69,14 @@ Canonical execution path:
 - `docs/MOVA_AGENT_API_V0_HANDBOOK.md` - operator/user troubleshooting handbook
 - `docs/MOVA_AGENT_API_DOCS_INDEX_V0.md` - full docs map (user-facing vs internal)
 - `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml` - public API contract
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md` - contract-run corridor boundary and limitation summary
+- `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md` - invariant list for non-bypass execution
 - `schemas/` + `examples/` - schema and payload references
 - `scripts/smoke_public_api.ps1` - public deployment smoke script
+- `scripts/smoke_contract_run_api.ps1` - contract-run corridor smoke script
+
+## Controlled contract-run corridor
+
+`/actions/run` remains the low-level single-action execution path.
+
+The contract-run API is the product-level corridor where the contract-run state owns step order and the agent can execute only the current admitted operation. This layer does not add cognition, dynamic routing, or autonomous orchestration.

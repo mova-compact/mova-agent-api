@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "contract_id",
+    "status",
+    "current_step_id",
+    "trace_ref",
+    "observation_count",
+    "gate"
+  ],
+  "properties": {
+    "run_id": { "type": "string" },
+    "contract_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["accepted", "in_progress", "waiting_review", "completed", "failed", "blocked"]
+    },
+    "current_step_id": { "type": "string" },
+    "next_allowed_operation_id": { "type": ["string", "null"] },
+    "trace_ref": { "type": "string" },
+    "observation_count": { "type": "integer", "minimum": 0 },
+    "gate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "gate_id",
+            "run_id",
+            "step_id",
+            "status",
+            "reason_code",
+            "prompt",
+            "requested_operation_id",
+            "created_at"
+          ],
+          "properties": {
+            "gate_id": { "type": "string" },
+            "run_id": { "type": "string" },
+            "step_id": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["waiting_review", "resolved", "expired", "cancelled"]
+            },
+            "reason_code": { "type": "string" },
+            "prompt": { "type": "string" },
+            "requested_operation_id": { "type": "string" },
+            "created_at": { "type": "string", "format": "date-time" },
+            "resolved_at": { "type": ["string", "null"], "format": "date-time" },
+            "decision": {
+              "type": ["string", "null"],
+              "enum": ["approve", "reject", null]
+            },
+            "decided_by": { "type": ["string", "null"] }
+          }
+        },
+        { "type": "null" }
+      ]
+    }
+  }
+}

@@ -83,7 +83,13 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_body = to_bytes(list_response.into_body(), usize::MAX).await.unwrap();
     let list_json: Value = serde_json::from_slice(&list_body).unwrap();
-    assert_eq!(list_json["contracts"][0]["contract_id"], "barbershop.owner_report.daily.v0");
+    assert!(
+        list_json["contracts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["contract_id"] == "barbershop.owner_report.daily.v0")
+    );
 
     let get_response = app
         .clone()

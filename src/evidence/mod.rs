@@ -4,6 +4,7 @@
 //! - evidence response structures
 //! - deterministic response assembly
 
+use crate::contract_run::{ContractRunEvidenceResponse, ContractRunStatus};
 use crate::observation::ObservationRecord;
 use crate::policy::PolicySummary;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,36 @@ pub fn build_evidence_response(
         trace_ref,
         observation_refs,
         policy_summary,
+    }
+}
+
+pub fn build_contract_run_evidence_response(
+    run_id: String,
+    contract_id: String,
+    status: ContractRunStatus,
+    trace_ref: String,
+    observations: &[ObservationRecord],
+    steps: Value,
+    gates: Value,
+    policy_summary: PolicySummary,
+) -> ContractRunEvidenceResponse {
+    let observation_refs = observations
+        .iter()
+        .map(|record| record.evidence_ref.clone())
+        .collect::<Vec<_>>();
+
+    ContractRunEvidenceResponse {
+        run_id,
+        contract_id,
+        status,
+        result: serde_json::json!({"outcome": status.as_str()}),
+        evidence: serde_json::json!({
+            "steps": steps,
+            "gates": gates
+        }),
+        trace_ref,
+        observation_refs,
+        policy_summary: serde_json::to_value(policy_summary).unwrap_or_else(|_| serde_json::json!({})),
     }
 }
 

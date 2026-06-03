@@ -12,6 +12,10 @@ Status: active V0 boundary freeze
 - `connectors` owns the side-effect boundary shape but remains no-side-effect in current V0.
 - `observation` owns in-process observation records.
 - `evidence` owns response assembly.
+- `contract_run` owns contract run state and current step pointer.
+- `contract_step` owns static step shape.
+- `gate` owns human review state.
+- `operation_admission` owns step-scoped admission result.
 - No module owns cognition, orchestration, dynamic routing, or autonomous decision-making.
 
 ## 2. Auth contract
@@ -19,6 +23,10 @@ Status: active V0 boundary freeze
 - Current V0 exposes placeholder and production auth contract shapes.
 - Authorization decisions remain policy-owned.
 - Transport remains metadata pass-through and does not own final authorization.
+- Agent-owned route selection is forbidden.
+- Client-provided next step is forbidden.
+- Client-provided connector override is forbidden.
+- Client-provided raw URL is forbidden.
 
 ## 3. Persistence boundary policy
 

@@ -1,0 +1,7 @@
+{
+  "step_id": "step_001",
+  "step_type": "connector_action",
+  "status": "ready",
+  "operation_id": "op_notify_webhook",
+  "requires_review": false
+}

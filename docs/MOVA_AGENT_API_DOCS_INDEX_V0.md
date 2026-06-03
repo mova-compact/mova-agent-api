@@ -6,6 +6,10 @@
   - first-line troubleshooting for common operational/API issues.
 - `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml`
   - public route and error contract.
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
+  - contract-run corridor summary and V0 limitation set.
+- `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
+  - invariant list for controlled execution without bypass paths.
 - `schemas/*.schema.json`
   - payload/contract validation source.
 - `examples/*.json`
@@ -32,6 +36,8 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `docs/MOVA_AGENT_API_SPEC_V0.md`
 - `docs/MOVA_AGENT_API_ROADMAP_V0.md`
 - `docs/MOVA_AGENT_API_RUNTIME_AUTHORITY_BOUNDARY_V0.md`
+- `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md`
+- `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_BOUNDARY_V0.md`
 - `docs/MOVA_AGENT_API_PRODUCTION_AUTH_CONTRACT_V0.md`
 - `docs/MOVA_AGENT_API_AUTH_VERIFIER_ADAPTER_CONTRACT_V0.md`
@@ -48,6 +54,7 @@ These are implementation/proof records, not lightweight user troubleshooting gui
 - `npm run validate:all`
 - `cargo build --target wasm32-unknown-unknown --features worker`
 - `npm run smoke:public`
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke_contract_run_api.ps1`
 
 ## Mapping for known issue classes
 

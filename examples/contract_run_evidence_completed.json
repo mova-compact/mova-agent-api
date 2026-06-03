@@ -1,0 +1,32 @@
+{
+  "run_id": "contract_run_req_contract_001",
+  "contract_id": "daily_owner_report_v0",
+  "status": "completed",
+  "result": {},
+  "evidence": {
+    "steps": [
+      {
+        "step_id": "step_001",
+        "operation_id": "op_notify_webhook",
+        "decision": "allow",
+        "reason_code": "OPERATION_ALLOWED",
+        "connector_summary": {}
+      }
+    ],
+    "gates": [
+      {
+        "gate_id": "gate_001",
+        "decision": "approve",
+        "decided_by": "user_001",
+        "reason_code": "HUMAN_GATE_APPROVED"
+      }
+    ]
+  },
+  "trace_ref": "trace_contract_001",
+  "observation_refs": [],
+  "policy_summary": {
+    "decision": "allow",
+    "policy_version": "policy.default.v0",
+    "reason_code": "CONTRACT_RUN_COMPLETED"
+  }
+}

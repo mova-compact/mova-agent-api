@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step_id", "step_type", "status", "requires_review"],
+  "properties": {
+    "step_id": { "type": "string" },
+    "step_type": {
+      "type": "string",
+      "enum": ["connector_action", "deterministic_action", "human_gate", "terminal"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "ready", "running", "completed", "waiting_review", "failed", "blocked"]
+    },
+    "operation_id": { "type": ["string", "null"] },
+    "requires_review": { "type": "boolean" }
+  }
+}

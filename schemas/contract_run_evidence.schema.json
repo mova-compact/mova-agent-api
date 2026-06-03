@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "contract_id",
+    "status",
+    "result",
+    "evidence",
+    "trace_ref",
+    "observation_refs",
+    "policy_summary"
+  ],
+  "properties": {
+    "run_id": { "type": "string" },
+    "contract_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["accepted", "in_progress", "waiting_review", "completed", "failed", "blocked"]
+    },
+    "result": { "type": "object" },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps", "gates"],
+      "properties": {
+        "steps": { "type": "array", "items": { "type": "object" } },
+        "gates": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "trace_ref": { "type": "string" },
+    "observation_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "policy_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "policy_version", "reason_code"],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["allow", "deny", "require_review", "redact"]
+        },
+        "policy_version": { "type": "string" },
+        "reason_code": { "type": "string" }
+      }
+    }
+  }
+}

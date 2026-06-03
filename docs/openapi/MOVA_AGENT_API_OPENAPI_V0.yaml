@@ -38,6 +38,7 @@ paths:
                   - policy_decisions
                   - execution_path
                   - runtime_provider
+                  - contract_run
                 properties:
                   action_types:
                     type: array
@@ -54,6 +55,23 @@ paths:
                     minItems: 7
                   runtime_provider:
                     $ref: "#/components/schemas/RuntimeProviderCapabilities"
+                  contract_run:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - supported
+                      - supports_next_step
+                      - supports_human_gate
+                      - supports_terminal_evidence
+                    properties:
+                      supported:
+                        type: boolean
+                      supports_next_step:
+                        type: boolean
+                      supports_human_gate:
+                        type: boolean
+                      supports_terminal_evidence:
+                        type: boolean
   /actions/validate:
     post:
       summary: Validate action request envelope without execution
@@ -361,6 +379,292 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /contracts/{contract_id}/runs:
+    post:
+      summary: Start a controlled contract run
+      operationId: startContractRun
+      parameters:
+        - name: contract_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContractRunRequest"
+      responses:
+        "202":
+          description: Contract run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractRunStatus"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authorization failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Contract not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Storage unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}:
+    get:
+      summary: Get contract run status
+      operationId: getContractRunStatus
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contract run status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractRunStatus"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}/next:
+    get:
+      summary: Get next allowed step and operation admission
+      operationId: getContractRunNext
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Next allowed step
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - run_id
+                  - contract_id
+                  - step
+                  - operation_admission
+                properties:
+                  run_id:
+                    type: string
+                  contract_id:
+                    type: string
+                  step:
+                    $ref: "#/components/schemas/ContractStep"
+                  operation_admission:
+                    $ref: "#/components/schemas/OperationAdmission"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}/steps/{step_id}/execute:
+    post:
+      summary: Execute only the current admitted step operation
+      operationId: executeContractRunStep
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: step_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - operation_id
+                - input_payload
+                - correlation
+              properties:
+                operation_id:
+                  type: string
+                input_payload:
+                  type: object
+                correlation:
+                  type: object
+      responses:
+        "200":
+          description: Step execution result
+          content:
+            application/json:
+              schema:
+                type: object
+        "202":
+          description: Step execution accepted
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          description: Policy or guard denial
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run or step not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale step or run-state conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Storage unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}/gates/current:
+    get:
+      summary: Get current human gate
+      operationId: getCurrentContractRunGate
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Human gate state
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  run_id:
+                    type: string
+                  gate_id:
+                    type: string
+                  step_id:
+                    type: string
+                  status:
+                    type: string
+                  reason_code:
+                    type: string
+                  prompt:
+                    type: string
+                  requested_operation_id:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  gate:
+                    type: object
+                    nullable: true
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}/gates/{gate_id}/resolve:
+    post:
+      summary: Resolve current human gate
+      operationId: resolveContractRunGate
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: gate_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HumanGateResolutionRequest"
+      responses:
+        "200":
+          description: Gate resolved
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Gate conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /contract-runs/{run_id}/evidence:
+    get:
+      summary: Get terminal contract-run evidence
+      operationId: getContractRunEvidence
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contract-run evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractRunEvidenceResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     Action:
@@ -562,3 +866,300 @@ components:
           type: boolean
         supports_live_deploy_binding:
           type: boolean
+    ContractRunRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - request_id
+        - actor
+        - source
+        - auth_context
+        - inputs
+        - context
+        - correlation
+        - timestamps
+      properties:
+        request_id:
+          type: string
+        actor:
+          type: object
+          additionalProperties: false
+          required:
+            - actor_type
+            - actor_id
+          properties:
+            actor_type:
+              type: string
+            actor_id:
+              type: string
+        source:
+          type: object
+          additionalProperties: false
+          required:
+            - channel
+            - client_id
+          properties:
+            channel:
+              type: string
+            client_id:
+              type: string
+        auth_context:
+          $ref: "#/components/schemas/AuthContext"
+        inputs:
+          type: object
+        context:
+          type: object
+        correlation:
+          type: object
+        timestamps:
+          type: object
+    ContractRunStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - contract_id
+        - status
+        - current_step_id
+        - trace_ref
+        - observation_count
+        - gate
+      properties:
+        run_id:
+          type: string
+        contract_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - in_progress
+            - waiting_review
+            - completed
+            - failed
+            - blocked
+        current_step_id:
+          type: string
+        next_allowed_operation_id:
+          type: string
+          nullable: true
+        trace_ref:
+          type: string
+        observation_count:
+          type: integer
+          minimum: 0
+        gate:
+          allOf:
+            - $ref: "#/components/schemas/HumanGate"
+          nullable: true
+    ContractStep:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - step_type
+        - status
+        - requires_review
+      properties:
+        step_id:
+          type: string
+        step_type:
+          type: string
+          enum:
+            - connector_action
+            - deterministic_action
+            - human_gate
+            - terminal
+        status:
+          type: string
+          enum:
+            - pending
+            - ready
+            - running
+            - completed
+            - waiting_review
+            - failed
+            - blocked
+        operation_id:
+          type: string
+          nullable: true
+        requires_review:
+          type: boolean
+    OperationAdmission:
+      type: object
+      additionalProperties: false
+      required:
+        - admission_id
+        - decision
+        - reason_code
+        - policy_version
+        - contract_id
+        - run_id
+        - step_id
+        - operation_id
+        - constraints
+      properties:
+        admission_id:
+          type: string
+        decision:
+          type: string
+          enum:
+            - allow
+            - deny
+            - require_review
+            - redact
+        reason_code:
+          type: string
+        policy_version:
+          type: string
+        contract_id:
+          type: string
+        run_id:
+          type: string
+        step_id:
+          type: string
+        operation_id:
+          type: string
+        allowed_connector_id:
+          type: string
+          nullable: true
+        allowed_endpoint_ref:
+          type: string
+          nullable: true
+        allowed_method:
+          type: string
+          nullable: true
+        constraints:
+          type: object
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    HumanGate:
+      type: object
+      additionalProperties: false
+      required:
+        - gate_id
+        - run_id
+        - step_id
+        - status
+        - reason_code
+        - prompt
+        - requested_operation_id
+        - created_at
+      properties:
+        gate_id:
+          type: string
+        run_id:
+          type: string
+        step_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - waiting_review
+            - resolved
+            - expired
+            - cancelled
+        reason_code:
+          type: string
+        prompt:
+          type: string
+        requested_operation_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        decision:
+          type: string
+          enum:
+            - approve
+            - reject
+          nullable: true
+        decided_by:
+          type: string
+          nullable: true
+    HumanGateResolutionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - decision
+        - actor
+        - reason
+        - timestamps
+      properties:
+        decision:
+          type: string
+          enum:
+            - approve
+            - reject
+        actor:
+          type: object
+          additionalProperties: false
+          required:
+            - actor_type
+            - actor_id
+          properties:
+            actor_type:
+              type: string
+            actor_id:
+              type: string
+        reason:
+          type: string
+        timestamps:
+          type: object
+    ContractRunEvidenceResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - contract_id
+        - status
+        - result
+        - evidence
+        - trace_ref
+        - observation_refs
+        - policy_summary
+      properties:
+        run_id:
+          type: string
+        contract_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - in_progress
+            - waiting_review
+            - completed
+            - failed
+            - blocked
+        result:
+          type: object
+        evidence:
+          type: object
+          additionalProperties: false
+          required:
+            - steps
+            - gates
+          properties:
+            steps:
+              type: array
+              items:
+                type: object
+            gates:
+              type: array
+              items:
+                type: object
+        trace_ref:
+          type: string
+        observation_refs:
+          type: array
+          items:
+            type: string
+        policy_summary:
+          $ref: "#/components/schemas/PolicySummary"

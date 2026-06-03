@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "gate_id",
+    "run_id",
+    "step_id",
+    "status",
+    "reason_code",
+    "prompt",
+    "requested_operation_id",
+    "created_at"
+  ],
+  "properties": {
+    "gate_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "step_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["waiting_review", "resolved", "expired", "cancelled"]
+    },
+    "reason_code": { "type": "string" },
+    "prompt": { "type": "string" },
+    "requested_operation_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "resolved_at": { "type": ["string", "null"], "format": "date-time" },
+    "decision": {
+      "type": ["string", "null"],
+      "enum": ["approve", "reject", null]
+    },
+    "decided_by": { "type": ["string", "null"] }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "run_id": "contract_run_req_contract_001",
+  "contract_id": "daily_owner_report_v0",
+  "status": "in_progress",
+  "current_step_id": "step_001",
+  "next_allowed_operation_id": "op_notify_webhook",
+  "trace_ref": "trace_contract_001",
+  "observation_count": 2,
+  "gate": null
+}
