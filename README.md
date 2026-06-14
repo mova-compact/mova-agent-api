@@ -1,10 +1,36 @@
 # MOVA Agent API
 
-`mova-agent-api` is the clean product repository for MOVA Agent API V0.
+`mova-agent-api` is the runtime and execution-boundary repository in the MOVA stack.
 
-It is a single API product for controlled agent actions with one future source of truth inside this repository.
+It defines how admitted requests and admitted contract runs are executed, observed, and exposed through runtime surfaces.
 
-Canonical execution path:
+It does not define:
+
+- core language semantics
+- package canon
+
+## Repository Boundary
+
+| Repository | Owns | Does not own |
+| --- | --- | --- |
+| `mova-spec` | Language validity: schemas, envelopes, catalogs, verbs, actions | Package canon, runtime execution |
+| `mova-contract-spec` | Package canon: manifest, flow, classification, runtime bindings | Runtime routes, run lifecycle, auth |
+| `mova-agent-api` | Runtime boundary: admission, contract-run lifecycle, connector execution, observation, evidence, HTTP/API surface | Core language canon, package canon |
+
+## Positioning
+
+This repository is the product/runtime layer for controlled agent actions.
+
+It is the place where:
+
+- public and internal runtime routes exist
+- contract runs are admitted and advanced
+- connector execution is guarded
+- observations and evidence are produced
+
+## Canonical Execution Paths
+
+Flat action path:
 
 - agent request
 - action model
@@ -14,79 +40,105 @@ Canonical execution path:
 - observation write
 - evidence response
 
-Controlled contract-run corridor:
+Contract-run corridor:
 
-- agent starts contract
-- contract run state
-- next allowed step
-- operation admission
-- guarded connector execution
+- contract run start
+- admitted next operation
+- guarded step execution
 - observation
 - evidence
 
-## What it is
+## Current Status
 
-- a product boundary for controlled agent actions
-- a clean API surface for agent requests, admission, execution, observations, and evidence
-- the future source of truth for MOVA Agent API V0
+- runtime V0 / V0.1 working surface
+- public contract-run corridor is the product path
+- `/actions/run` remains compatibility-only and not the public product contract
+- `X-MOVA-API-KEY` gates the v0.1 public surface
 
-## What it is not
+## Quick Start For Humans
 
-- not the old `mova-api` runtime workspace
-- not the old `mova-mcp` flat runner
-- not a proxy or marketplace layer
-- not a visual builder
-- not an autonomous agent platform
-- not a rewrite of `mova-spec` or `mova-contract-spec`
+Recommended reading order:
 
-## Current status
+1. `README.md`
+2. `reference/runtime-boundary-guide.md`
+3. `reference/contract-run-cheatsheet.md`
+4. `docs/README.md`
+5. `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml`
+6. `operator-guide/README.md`
 
-- V0 planning / skeleton
-- flat action path and controlled contract-run corridor available as local V0 behavior
-- contract-run connector_action steps execute through guarded `ConnectorExecutor` boundary
-- contract-run transitions are resolved from admitted contract `flow.next`
-- contract-run flow is validated before admission, executable steps require explicit `operation_id`, and public evidence avoids resolved provider URLs
-- v0.1 public release surface is contract-run only and requires `X-MOVA-API-KEY`
-- v0.1 release remains `NOT READY` until real Telegram provider proof succeeds
-- no legacy implementation copied here
+Validation entry points:
 
-## Source of truth rule
+```bash
+cargo test
+npm install
+npm run validate:all
+```
 
-- `mova-agent-api` is the only active source of truth for the new product
-- `mova-spec` remains the upstream language canon
-- `mova-contract-spec` remains the upstream contract package canon
-- old runtime and MCP repositories are reference-only
+Optional smoke:
 
-## Initial repository layout
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/smoke_public_api.ps1
+```
 
-- `docs/` - product definition and specifications
-- `src/` - future implementation boundary
-- `schemas/` - product-local schemas and contract shapes
-- `tests/` - validation and smoke coverage
-- `examples/` - minimal usage examples
+## Quick Start For LLM Agents / Agent Skill
 
-## Reference material
+Use this repository when the user is asking about:
 
-- `_mova_meta/docs/MOVA_AGENT_API_EXTRACTION_AUDIT_V0.md`
+- runtime admission
+- contract-run lifecycle
+- HTTP/API routes
+- connector execution boundaries
+- auth, human gates, operator behavior
+- observation and evidence response
 
-## Documentation quick links
+Do not use this repository as the source of truth for:
 
-- `docs/MOVA_AGENT_API_V0_HANDBOOK.md` - operator/user troubleshooting handbook
-- `docs/MOVA_AGENT_API_DOCS_INDEX_V0.md` - full docs map (user-facing vs internal)
-- `docs/openapi/MOVA_AGENT_API_OPENAPI_V0.yaml` - public API contract
-- `docs/MOVA_AGENT_API_PUBLIC_RUNTIME_PARITY_V0_1.md` - v0.1 proof that native public router, Worker, and OpenAPI share the same public surface
-- `docs/MOVA_AGENT_API_V0_1_CHANGELOG.md` - current v0.1 release changelog and blocker status
-- `docs/MOVA_AGENT_API_CONTRACT_RUN_CORRIDOR_V0.md` - contract-run corridor boundary and limitation summary
-- `docs/MOVA_AGENT_API_NO_BYPASS_INVARIANTS_V0.md` - invariant list for non-bypass execution
-- `schemas/` + `examples/` - schema and payload references
-- `scripts/smoke_public_api.ps1` - public deployment smoke script
-- `scripts/smoke_contract_run_api.ps1` - contract-run corridor smoke script
+- `ds.*` / `env.*` language semantics -> `mova-spec`
+- package assembly and manifest canon -> `mova-contract-spec`
 
-## Controlled contract-run corridor
+## Reference Guides
 
-`/actions/run` remains an internal/lab low-level single-action execution path and is not part of the v0.1 public release contract.
+- [Runtime Boundary Guide](reference/runtime-boundary-guide.md)
+- [Contract Run Cheatsheet](reference/contract-run-cheatsheet.md)
+- [Auth And Gates Patterns](reference/auth-and-gates-patterns.md)
+- [Operator API Governance](reference/operator-api-governance.md)
+- [Docs Index](docs/README.md)
+- [Examples Index](examples/README.md)
 
-The contract-run API is the product-level corridor where the contract-run state owns step order and the agent can execute only the current admitted operation. This layer does not add cognition, dynamic routing, or autonomous orchestration.
+## Repository Layout
 
-Product corridor routes use `/contracts/{contract_id}/runs` and `/contract-runs/{run_id}/...`.
-Legacy `/contracts/{contract_id}/run` remains compatibility-only and must not be extended for new product behavior.
+```text
+mova-agent-api/
+├── README.md
+├── CONTRIBUTING.md
+├── src/
+├── schemas/
+├── tests/
+├── examples/
+├── docs/
+├── operator-guide/
+├── reference/
+├── scripts/
+├── Cargo.toml
+└── package.json
+```
+
+## Runtime Boundary Rules
+
+1. Runtime executes admitted behavior; it does not redefine language canon.
+2. Runtime consumes package canon; it does not redefine package canon.
+3. Public product behavior should center on the contract-run corridor.
+4. Connector execution must stay guarded and explicit.
+5. Evidence and observations are first-class runtime outputs.
+
+## Validation Surface
+
+- `cargo test`
+- `npm run validate:examples`
+- `npm run validate:openapi`
+- `npm run validate:all`
+- smoke scripts under `scripts/`
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
