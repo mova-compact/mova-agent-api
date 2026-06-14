@@ -62,6 +62,10 @@ fn public_api_key() -> String {
     std::env::var("MOVA_API_KEY").unwrap_or_else(|_| "mova-dev-key".to_string())
 }
 
+fn public_admin_api_key() -> String {
+    std::env::var("MOVA_ADMIN_API_KEY").unwrap_or_else(|_| "mova-admin-dev-key".to_string())
+}
+
 fn provider_execute_body(operation_id: &str, text: &str) -> String {
     json!({
         "operation_id": operation_id,
@@ -835,7 +839,7 @@ async fn public_contract_run_evidence_exposes_server_tenant_and_idempotency_with
 }
 
 #[tokio::test]
-async fn public_router_does_not_expose_contract_registration_route() {
+async fn public_contract_register_requires_admin_api_key() {
     let app = public_router();
     let response = app
         .oneshot(
@@ -843,12 +847,75 @@ async fn public_router_does_not_expose_contract_registration_route() {
                 .method(Method::POST)
                 .uri("/contracts/register")
                 .header("content-type", "application/json")
-                .body(Body::from("{}"))
+                .body(Body::from(
+                    json!({
+                        "mode": "local_packaged",
+                        "contract_id": "public_register_missing_admin_v0",
+                        "execution_type": "agent",
+                        "inline_flow_json": alpha_contract_flow()
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn public_contract_register_rejects_tenant_key_and_accepts_admin_key() {
+    let app = public_router();
+    let payload = json!({
+        "mode": "local_packaged",
+        "contract_id": "public_register_admin_v0",
+        "execution_type": "agent",
+        "inline_flow_json": alpha_contract_flow()
+    });
+
+    let tenant_key = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tenant_key.status(), StatusCode::UNAUTHORIZED);
+
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .header("x-mova-admin-api-key", public_admin_api_key())
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+
+    let start = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/public_register_admin_v0/runs")
+                .header("content-type", "application/json")
+                .header("x-mova-api-key", public_api_key())
+                .body(Body::from(public_contract_run_start_body()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
 }
 
 #[tokio::test]

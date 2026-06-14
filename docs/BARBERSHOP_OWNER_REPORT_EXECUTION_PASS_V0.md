@@ -80,7 +80,7 @@ Observed evidence summary included:
 Reason:
 
 - Current `mova-agent-api` `/actions/run` path does not execute this operator contract package as a first-class flow step-machine with contract-native HUMAN_GATE transitions.
-- Current public surface does not expose dedicated contract registration endpoint (`/contracts/register`) for this package style.
+- Historical note: this pass was recorded before public admin exposure of `POST /contracts/register`.
 
 ## What is proven now
 

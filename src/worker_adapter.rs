@@ -26,7 +26,7 @@ use crate::gate::{HumanGate, HumanGateDecision, HumanGateResolutionRequest, Huma
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::operation_admission::OperationAdmission;
 use crate::policy::{AdmissionDecision, PolicyAdmission};
-use crate::public_api::{authenticate_api_key, PublicApiAuthError, PublicApiConfig};
+use crate::public_api::{authenticate_admin_api_key, authenticate_api_key, PublicApiAuthError, PublicApiConfig};
 use crate::request::{parse_request_envelope, validate_request_envelope};
 use crate::secrets::redact_json;
 use crate::storage::{CloudflareKvRunStore, RunSnapshot, RunStore};
@@ -332,6 +332,9 @@ fn public_api_config_from_env(env: &Env) -> PublicApiConfig {
     if let Ok(value) = env.var("MOVA_API_KEY") {
         cfg.api_key = value.to_string();
     }
+    if let Ok(value) = env.var("MOVA_ADMIN_API_KEY") {
+        cfg.admin_api_key = value.to_string();
+    }
     if let Ok(value) = env.var("MOVA_SERVER_TENANT_ID") {
         cfg.tenant_id = value.to_string();
     }
@@ -340,6 +343,28 @@ fn public_api_config_from_env(env: &Env) -> PublicApiConfig {
     }
     if let Ok(value) = env.var("MOVA_PUBLIC_CLIENT_ID") {
         cfg.client_id = value.to_string();
+    }
+    if let Ok(value) = env.var("MOVA_PUBLIC_ALLOWED_SCOPES") {
+        let scopes = value
+            .to_string()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+        if !scopes.is_empty() {
+            cfg.allowed_scopes = scopes;
+        }
+    }
+    if let Ok(value) = env.var("MOVA_PUBLIC_ADMIN_ALLOWED_SCOPES") {
+        let scopes = value
+            .to_string()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+        if !scopes.is_empty() {
+            cfg.admin_allowed_scopes = scopes;
+        }
     }
     cfg
 }
@@ -702,6 +727,18 @@ fn worker_public_auth_error(error: PublicApiAuthError) -> Result<Response> {
             "invalid x-mova-api-key",
             vec!["header: x-mova-api-key".to_string()],
         ),
+        PublicApiAuthError::MissingAdminApiKey => json_error(
+            401,
+            "authentication_required",
+            "missing x-mova-admin-api-key",
+            vec!["header: x-mova-admin-api-key".to_string()],
+        ),
+        PublicApiAuthError::InvalidAdminApiKey => json_error(
+            403,
+            "authentication_failed",
+            "invalid x-mova-admin-api-key",
+            vec!["header: x-mova-admin-api-key".to_string()],
+        ),
     }
 }
 
@@ -717,6 +754,20 @@ fn authorize_worker_public_contract_route(
         .map(|value| value.to_string());
     authenticate_api_key(api_key.as_deref(), &state.public_api).map_err(worker_public_auth_error)?;
     Ok(state.public_api.auth_context())
+}
+
+fn authorize_worker_public_admin_route(
+    req: &Request,
+    state: &WorkerState,
+) -> std::result::Result<crate::request::AuthContext, Result<Response>> {
+    let api_key = req
+        .headers()
+        .get("x-mova-admin-api-key")
+        .ok()
+        .flatten()
+        .map(|value| value.to_string());
+    authenticate_admin_api_key(api_key.as_deref(), &state.public_api).map_err(worker_public_auth_error)?;
+    Ok(state.public_api.admin_auth_context())
 }
 
 fn parse_json_with_limit(bytes: &[u8]) -> std::result::Result<Value, String> {
@@ -2958,7 +3009,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if let Some(route) = match_worker_route(method.as_str(), path.as_str()) {
         return dispatch_worker_route(req, state, route).await;
     }
-    if !matches!(path.as_str(), "/health" | "/ready" | "/capabilities") {
+    if !matches!(path.as_str(), "/health" | "/ready" | "/capabilities" | "/contracts/register") {
         return Response::from_json(&json!({
             "error": {
                 "code": "route_not_found",
@@ -3035,6 +3086,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/contracts/register", move |mut req, _ctx| {
             let state = Arc::clone(&state_contract_register);
             async move {
+                if let Err(err) = authorize_worker_public_admin_route(&req, state.as_ref()) {
+                    return err;
+                }
                 let body = req.bytes().await?;
                 let payload = match parse_json_with_limit(&body) {
                     Ok(v) => v,

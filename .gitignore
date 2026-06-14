@@ -30,3 +30,5 @@ Thumbs.db
 *.exe
 *.bin
 *.class
+data/barbershop/output/audit/*.json
+data/barbershop/output/reports/*.md

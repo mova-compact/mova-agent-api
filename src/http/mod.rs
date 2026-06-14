@@ -23,7 +23,9 @@ use crate::github_file_bridge::run_barbershop_file_e2e;
 use crate::observation::{ObservationJournal, ObservationRecord};
 use crate::operation_admission::OperationAdmission;
 use crate::policy::{AdmissionDecision, PolicyAdmission};
-use crate::public_api::{authenticate_api_key, sanitize_idempotency_key, PublicApiAuthError, PublicApiConfig};
+use crate::public_api::{
+    authenticate_admin_api_key, authenticate_api_key, sanitize_idempotency_key, PublicApiAuthError, PublicApiConfig,
+};
 use crate::request::{parse_request_envelope, validate_request_envelope, AuthContext, RequestValidationError};
 use crate::runtime::{
     LocalEnvRuntimeProvider, LocalEnvSecretResolver, RuntimeProvider, RuntimeProviderCapabilities,
@@ -231,6 +233,7 @@ pub fn public_router_with_state(mut state: AppState) -> Router {
         .route("/health", get(get_health))
         .route("/ready", get(get_ready))
         .route("/capabilities", get(get_capabilities))
+        .route("/contracts/register", post(post_contract_register))
         .route("/contracts/:contract_id/runs", post(post_contract_run_start))
         .route("/contract-runs/:run_id", get(get_contract_run_status))
         .route("/contract-runs/:run_id/next", get(get_contract_run_next))
@@ -446,6 +449,26 @@ fn public_api_auth_error(error: PublicApiAuthError) -> (StatusCode, Json<ErrorRe
                 },
             }),
         ),
+        PublicApiAuthError::MissingAdminApiKey => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "authentication_required".to_string(),
+                    message: "missing x-mova-admin-api-key".to_string(),
+                    details: vec!["header: x-mova-admin-api-key".to_string()],
+                },
+            }),
+        ),
+        PublicApiAuthError::InvalidAdminApiKey => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: ApiError {
+                    code: "authentication_failed".to_string(),
+                    message: "invalid x-mova-admin-api-key".to_string(),
+                    details: vec!["header: x-mova-admin-api-key".to_string()],
+                },
+            }),
+        ),
     }
 }
 
@@ -457,6 +480,12 @@ fn authorize_public_contract_route(
     authenticate_api_key(api_key.as_deref(), &state.public_api)
         .map_err(public_api_auth_error)?;
     Ok(state.public_api.auth_context())
+}
+
+fn authorize_public_admin_route(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, (StatusCode, Json<ErrorResponse>)> {
+    let api_key = header_value(headers, "x-mova-admin-api-key");
+    authenticate_admin_api_key(api_key.as_deref(), &state.public_api).map_err(public_api_auth_error)?;
+    Ok(state.public_api.admin_auth_context())
 }
 
 fn inject_public_contract_run_context(
@@ -977,8 +1006,14 @@ async fn get_run_evidence(State(state): State<AppState>, Path(run_id): Path<Stri
 
 async fn post_contract_register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterContractRequest>,
 ) -> impl IntoResponse {
+    if state.public_api_enforced {
+        if let Err(err) = authorize_public_admin_route(&headers, &state) {
+            return err.into_response();
+        }
+    }
     if payload.contract_id.trim().is_empty() {
         return bad_request(
             "contract_registration_invalid",
