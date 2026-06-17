@@ -127,6 +127,30 @@ fn alpha_contract_flow() -> Value {
     })
 }
 
+fn inline_admin_chat_contract_flow() -> Value {
+    json!({
+        "version": "1.0",
+        "description": "inline admin chat flow",
+        "entry": "deliver_admin_chat",
+        "steps": [
+            {
+                "id": "deliver_admin_chat",
+                "operation_id": "op_send_report",
+                "step_type": "connector_action",
+                "execution_mode": "DETERMINISTIC",
+                "connector": {
+                    "name": "provider.connector.v1",
+                    "connector_ref": "telegram.admin_chat",
+                    "operation": "send_message",
+                    "side_effect_intent": "external_network"
+                },
+                "next": {"default": {"terminal": "completed"}}
+            }
+        ],
+        "parallel_steps": []
+    })
+}
+
 #[tokio::test]
 async fn contract_run_corridor_happy_path_completes_with_evidence() {
     let app = router();
@@ -136,7 +160,7 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -257,7 +281,7 @@ async fn contract_run_corridor_happy_path_completes_with_evidence() {
     assert_eq!(evidence.status(), StatusCode::OK);
     let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
     let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
-    assert_eq!(evidence_json["contract_id"], "daily_owner_report_v0");
+    assert_eq!(evidence_json["contract_id"], "fixture_contract_run_alpha_v0");
     assert_eq!(evidence_json["status"], "completed");
     assert!(evidence_json["evidence"]["steps"].as_array().unwrap().len() >= 1);
     assert!(evidence_json["evidence"]["gates"].as_array().unwrap().len() >= 1);
@@ -292,7 +316,7 @@ async fn contract_run_corridor_uses_contract_run_endpoint_scope() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -336,7 +360,7 @@ async fn provider_connector_contract_admission_resolves_registry_constraints() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .uri("/contracts/fixture_provider_connector_proxy_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -347,8 +371,8 @@ async fn provider_connector_contract_admission_resolves_registry_constraints() {
     let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
     let start_json: Value = serde_json::from_slice(&start_body).unwrap();
     let run_id = start_json["run_id"].as_str().unwrap().to_string();
-    assert_eq!(start_json["current_step_id"], "send_owner_report");
-    assert_eq!(start_json["next_allowed_operation_id"], "op_send_owner_report");
+    assert_eq!(start_json["current_step_id"], "step_send_provider_message");
+    assert_eq!(start_json["next_allowed_operation_id"], "op_provider_send_message");
 
     let next = app
         .oneshot(
@@ -369,7 +393,7 @@ async fn provider_connector_contract_admission_resolves_registry_constraints() {
     assert_eq!(admission["allowed_method"], "POST");
     assert_eq!(
         admission["constraints"]["connector_ref"],
-        "telegram.owner_report_channel"
+        "telegram.fixture_primary_channel"
     );
     assert_eq!(admission["constraints"]["provider"], "telegram");
     assert_eq!(admission["constraints"]["operation"], "send_message");
@@ -388,7 +412,7 @@ async fn provider_connector_contract_denies_nested_secret_and_connector_override
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .uri("/contracts/fixture_provider_connector_proxy_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -404,12 +428,12 @@ async fn provider_connector_contract_denies_nested_secret_and_connector_override
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/contract-runs/{run_id}/steps/send_owner_report/execute"
+                    "/contract-runs/{run_id}/steps/step_send_provider_message/execute"
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "operation_id": "op_send_owner_report",
+                        "operation_id": "op_provider_send_message",
                         "input_payload": {
                             "text": "Owner report",
                             "chat_id": "evil",
@@ -443,7 +467,7 @@ async fn provider_connector_contract_executes_with_fake_adapter_and_redacted_evi
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .uri("/contracts/fixture_provider_connector_proxy_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -461,11 +485,11 @@ async fn provider_connector_contract_executes_with_fake_adapter_and_redacted_evi
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/contract-runs/{run_id}/steps/send_owner_report/execute"
+                    "/contract-runs/{run_id}/steps/step_send_provider_message/execute"
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(provider_execute_body(
-                    "op_send_owner_report",
+                    "op_provider_send_message",
                     "Owner report: revenue 1234 EUR",
                 )))
                 .unwrap(),
@@ -487,14 +511,14 @@ async fn provider_connector_contract_executes_with_fake_adapter_and_redacted_evi
     assert_eq!(evidence.status(), StatusCode::OK);
     let evidence_body = to_bytes(evidence.into_body(), usize::MAX).await.unwrap();
     let evidence_json: Value = serde_json::from_slice(&evidence_body).unwrap();
-    assert_eq!(evidence_json["contract_id"], "provider_connector_owner_report_v0");
+    assert_eq!(evidence_json["contract_id"], "fixture_provider_connector_proxy_v0");
     assert_eq!(evidence_json["status"], "completed");
     let connector_summary = &evidence_json["evidence"]["steps"][0]["connector_summary"];
     assert_eq!(connector_summary["connector_id"], "provider.connector.v1");
     assert!(connector_summary["endpoint_ref"].is_null());
     assert_eq!(connector_summary["method"], "POST");
     assert_eq!(connector_summary["provider"], "telegram");
-    assert_eq!(connector_summary["connector_ref"], "telegram.owner_report_channel");
+    assert_eq!(connector_summary["connector_ref"], "telegram.fixture_primary_channel");
     assert_eq!(connector_summary["operation"], "send_message");
     assert_eq!(connector_summary["connector_mode"], "deterministic_fake_provider_connector");
     assert_eq!(connector_summary["response_preview"]["ok"], true);
@@ -513,7 +537,7 @@ async fn public_contract_run_requires_api_key() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(public_contract_run_start_body()))
                 .unwrap(),
@@ -560,7 +584,7 @@ async fn public_contract_run_rejects_invalid_api_key() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", "wrong")
                 .body(Body::from(public_contract_run_start_body()))
@@ -579,7 +603,7 @@ async fn public_contract_run_accepts_valid_api_key_and_assigns_server_tenant() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .body(Body::from(public_contract_run_start_body()))
@@ -618,7 +642,7 @@ async fn public_contract_run_start_replays_same_idempotency_key() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-start-001")
@@ -637,7 +661,7 @@ async fn public_contract_run_start_replays_same_idempotency_key() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-start-001")
@@ -661,7 +685,7 @@ async fn public_contract_run_rejects_client_tenant_override() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .body(Body::from(
@@ -694,7 +718,7 @@ async fn public_contract_run_step_execute_replays_same_idempotency_key_and_block
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .uri("/contracts/fixture_provider_connector_proxy_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .body(Body::from(public_contract_run_start_body()))
@@ -712,12 +736,12 @@ async fn public_contract_run_step_execute_replays_same_idempotency_key_and_block
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .uri(format!("/contract-runs/{run_id}/steps/step_send_provider_message/execute"))
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-step-001")
                 .body(Body::from(provider_execute_body(
-                    "op_send_owner_report",
+                    "op_provider_send_message",
                     "release replay proof",
                 )))
                 .unwrap(),
@@ -735,12 +759,12 @@ async fn public_contract_run_step_execute_replays_same_idempotency_key_and_block
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .uri(format!("/contract-runs/{run_id}/steps/step_send_provider_message/execute"))
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-step-001")
                 .body(Body::from(provider_execute_body(
-                    "op_send_owner_report",
+                    "op_provider_send_message",
                     "release replay proof",
                 )))
                 .unwrap(),
@@ -757,12 +781,12 @@ async fn public_contract_run_step_execute_replays_same_idempotency_key_and_block
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .uri(format!("/contract-runs/{run_id}/steps/step_send_provider_message/execute"))
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-step-002")
                 .body(Body::from(provider_execute_body(
-                    "op_send_owner_report",
+                    "op_provider_send_message",
                     "release replay proof",
                 )))
                 .unwrap(),
@@ -783,7 +807,7 @@ async fn public_contract_run_evidence_exposes_server_tenant_and_idempotency_with
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/provider_connector_owner_report_v0/runs")
+                .uri("/contracts/fixture_provider_connector_proxy_v0/runs")
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .body(Body::from(public_contract_run_start_body()))
@@ -801,12 +825,12 @@ async fn public_contract_run_evidence_exposes_server_tenant_and_idempotency_with
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/contract-runs/{run_id}/steps/send_owner_report/execute"))
+                .uri(format!("/contract-runs/{run_id}/steps/step_send_provider_message/execute"))
                 .header("content-type", "application/json")
                 .header("x-mova-api-key", public_api_key())
                 .header("idempotency-key", "release-evidence-001")
                 .body(Body::from(provider_execute_body(
-                    "op_send_owner_report",
+                    "op_provider_send_message",
                     "release evidence proof",
                 )))
                 .unwrap(),
@@ -852,7 +876,10 @@ async fn public_contract_register_requires_admin_api_key() {
                         "mode": "local_packaged",
                         "contract_id": "public_register_missing_admin_v0",
                         "execution_type": "agent",
-                        "inline_flow_json": alpha_contract_flow()
+                        "manifest": {
+                            "contract_id": "public_register_missing_admin_v0"
+                        },
+                        "flow_json": alpha_contract_flow()
                     })
                     .to_string(),
                 ))
@@ -870,7 +897,10 @@ async fn public_contract_register_rejects_tenant_key_and_accepts_admin_key() {
         "mode": "local_packaged",
         "contract_id": "public_register_admin_v0",
         "execution_type": "agent",
-        "inline_flow_json": alpha_contract_flow()
+        "manifest": {
+            "contract_id": "public_register_admin_v0"
+        },
+        "flow_json": alpha_contract_flow()
     });
 
     let tenant_key = app
@@ -927,8 +957,8 @@ async fn public_router_does_not_expose_lab_or_internal_routes() {
         (Method::GET, "/runs/run_001", None),
         (Method::GET, "/runs/run_001/evidence", None),
         (Method::GET, "/contracts", None),
-        (Method::GET, "/contracts/daily_owner_report_v0", None),
-        (Method::POST, "/contracts/daily_owner_report_v0/run", Some("{}")),
+        (Method::GET, "/contracts/fixture_contract_run_alpha_v0", None),
+        (Method::POST, "/contracts/fixture_contract_run_alpha_v0/run", Some("{}")),
         (Method::POST, "/contracts/runs/run_001/decision", Some("{}")),
     ];
 
@@ -961,7 +991,7 @@ async fn contract_run_corridor_denies_wrong_step_operation_and_override() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -1065,7 +1095,7 @@ async fn contract_run_corridor_reject_gate_blocks_run() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -1167,7 +1197,7 @@ async fn contract_run_corridor_approve_response_exposes_current_step_and_next_op
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -1242,7 +1272,7 @@ async fn contract_run_corridor_returns_bad_gateway_when_connector_executor_fails
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/daily_owner_report_v0/runs")
+                .uri("/contracts/fixture_contract_run_alpha_v0/runs")
                 .header("content-type", "application/json")
                 .body(Body::from(contract_run_start_body()))
                 .unwrap(),
@@ -1382,6 +1412,99 @@ async fn contract_run_corridor_uses_flow_driven_non_fixture_step_ids() {
     assert_eq!(evidence_json["evidence"]["transitions"][0]["target_step_id"], "alpha_gate");
     assert_eq!(evidence_json["evidence"]["gates"][0]["step_id"], "alpha_gate");
     assert_eq!(evidence_json["evidence"]["gates"][0]["requested_operation_id"], "op_send_report");
+}
+
+#[tokio::test]
+async fn contract_run_corridor_resolves_runtime_chat_id_for_inline_connector_ref() {
+    let app = router();
+    let register_payload = json!({
+        "contract_id": "inline_admin_chat_contract_v0",
+        "execution_type": "agent",
+        "inline_flow_json": inline_admin_chat_contract_flow()
+    });
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/register")
+                .header("content-type", "application/json")
+                .body(Body::from(register_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+
+    let start_body = json!({
+        "request_id": "req_inline_admin_chat_001",
+        "actor": {"actor_type": "ai_agent", "actor_id": "agent_001"},
+        "source": {"channel": "api", "client_id": "client_001"},
+        "auth_context": {
+            "mode": "placeholder",
+            "scopes": ["contracts.run"],
+            "source": "example",
+            "verified": false
+        },
+        "inputs": {},
+        "context": {
+            "tenant_id": "tenant_001",
+            "runtime_targets": {
+                "admin": {"chat_id": "runtime-admin-chat"}
+            }
+        },
+        "correlation": {
+            "trace_id": "trace_inline_admin_chat_001",
+            "correlation_id": "corr_inline_admin_chat_001"
+        },
+        "timestamps": {"requested_at": "2026-05-23T08:30:00Z"}
+    })
+    .to_string();
+
+    let start = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/contracts/inline_admin_chat_contract_v0/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(start_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let start_body = to_bytes(start.into_body(), usize::MAX).await.unwrap();
+    let start_json: Value = serde_json::from_slice(&start_body).unwrap();
+    let run_id = start_json["run_id"].as_str().unwrap().to_string();
+
+    let next = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/contract-runs/{run_id}/next"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.status(), StatusCode::OK);
+    let next_body = to_bytes(next.into_body(), usize::MAX).await.unwrap();
+    let next_json: Value = serde_json::from_slice(&next_body).unwrap();
+    assert_eq!(next_json["operation_admission"]["decision"], "allow");
+    assert_eq!(
+        next_json["operation_admission"]["constraints"]["connector_ref"],
+        "telegram.admin_chat"
+    );
+    assert_eq!(
+        next_json["operation_admission"]["constraints"]["target_ref"],
+        "binding://telegram_admin_chat_send_message"
+    );
+    assert_eq!(
+        next_json["operation_admission"]["constraints"]["resolved_chat_id"],
+        "runtime-admin-chat"
+    );
 }
 
 #[tokio::test]

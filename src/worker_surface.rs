@@ -54,9 +54,9 @@ mod tests {
     #[test]
     fn matches_contract_run_start_route() {
         assert_eq!(
-            match_worker_route("POST", "/contracts/daily_owner_report_v0/runs"),
+            match_worker_route("POST", "/contracts/fixture_contract_run_alpha_v0/runs"),
             Some(WorkerRoute::StartContractRun {
-                contract_id: "daily_owner_report_v0".to_string(),
+                contract_id: "fixture_contract_run_alpha_v0".to_string(),
             })
         );
     }
@@ -126,6 +126,6 @@ mod tests {
     #[test]
     fn does_not_match_missing_adapter_route() {
         assert_eq!(match_worker_route("GET", "/contract-runs"), None);
-        assert_eq!(match_worker_route("POST", "/contracts/daily_owner_report_v0/run"), None);
+        assert_eq!(match_worker_route("POST", "/contracts/fixture_contract_run_alpha_v0/run"), None);
     }
 }

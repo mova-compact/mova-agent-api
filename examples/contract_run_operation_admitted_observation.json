@@ -1,13 +1,13 @@
 {
   "run_id": "contract_run_req_provider_001",
-  "step_id": "send_owner_report",
+  "step_id": "step_send_provider_message",
   "event_type": "contract_run.operation_admitted",
   "timestamp": "2026-05-23T08:32:30Z",
   "subject": {
-    "operation_id": "op_send_owner_report"
+    "operation_id": "op_provider_send_message"
   },
   "result": {
-    "operation_id": "op_send_owner_report",
+    "operation_id": "op_provider_send_message",
     "decision": "allow",
     "reason_code": "NEXT_OPERATION_ALLOWED",
     "allowed_connector_id": "provider.connector.v1",

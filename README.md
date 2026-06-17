@@ -131,6 +131,12 @@ mova-agent-api/
 4. Connector execution must stay guarded and explicit.
 5. Evidence and observations are first-class runtime outputs.
 
+Current alignment rule:
+
+- runtime should prefer package-declared `runtime_binding_set` materialization for `EXTERNAL_CALL`
+- runtime should treat direct `flow.connector` metadata as compatibility material, not the long-term package authority
+- unified connector proxy semantics are frozen in `mova-contract-spec/docs/UNIFIED_CONNECTOR_PROXY_MODEL_v0.md`
+
 ## Validation Surface
 
 - `cargo test`

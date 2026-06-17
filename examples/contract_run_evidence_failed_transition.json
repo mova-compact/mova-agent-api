@@ -1,6 +1,6 @@
 {
   "run_id": "contract_run_req_contract_001",
-  "contract_id": "daily_owner_report_v0",
+  "contract_id": "fixture_contract_run_alpha_v0",
   "tenant_id": "tenant_server_owned",
   "status": "failed",
   "result": {},

@@ -1,14 +1,14 @@
 {
   "run_id": "contract_run_req_provider_001",
-  "contract_id": "provider_connector_owner_report_v0",
+  "contract_id": "fixture_provider_connector_proxy_v0",
   "tenant_id": "tenant_server_owned",
   "status": "completed",
   "result": {},
   "evidence": {
     "steps": [
       {
-        "step_id": "send_owner_report",
-        "operation_id": "op_send_owner_report",
+        "step_id": "step_send_provider_message",
+        "operation_id": "op_provider_send_message",
         "decision": "allow",
         "reason_code": "OPERATION_ALLOWED",
         "admission": {
@@ -21,7 +21,7 @@
         "connector_summary": {
           "connector_id": "provider.connector.v1",
           "endpoint_ref": null,
-          "connector_ref": "telegram.owner_report_channel",
+          "connector_ref": "telegram.fixture_primary_channel",
           "operation": "send_message",
           "method": "POST",
           "side_effect_intent": "external_network",
@@ -40,7 +40,7 @@
     "gates": [],
     "transitions": [
       {
-        "from_step_id": "send_owner_report",
+        "from_step_id": "step_send_provider_message",
         "outcome": "default",
         "kind": "terminal",
         "target_step_id": null,

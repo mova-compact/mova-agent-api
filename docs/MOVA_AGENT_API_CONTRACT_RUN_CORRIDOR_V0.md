@@ -28,7 +28,7 @@ Client payload cannot override `connector_id`, `connector_ref`, `endpoint_ref`, 
 `/actions/run` and contract-run corridor use separate endpoint policy scopes:
 - `webhook_site_test` -> `actions.run`
 - `webhook_site_contract_run_test` -> `contracts.run`
-Contract-run fixture `daily_owner_report_v0` uses `webhook_site_contract_run_test`.
+Contract-run fixture `fixture_contract_run_alpha_v0` uses `webhook_site_contract_run_test`.
 Contract-run `connector_action` V0 allows `side_effect_intent`: `none`, `local_only`, `external_network`.
 `destructive` remains denied.
 
@@ -45,10 +45,10 @@ Telegram `send_message` is the first provider adapter behind this registry.
 It is not a contract-run runtime special case and it is not the connector architecture itself.
 
 Built-in demo contract:
-- `provider_connector_owner_report_v0`
+- `fixture_provider_connector_proxy_v0`
 
 Built-in registry demo target:
-- `telegram.owner_report_channel` -> provider `telegram`, operation `send_message`, scope `contracts.run`
+- `telegram.fixture_primary_channel` -> provider `telegram`, operation `send_message`, scope `contracts.run`
 
 ## Public runtime boundary
 

@@ -78,6 +78,7 @@ async fn offline_stub_returns_rule_driven_result() {
         allowed_webhook_urls: vec![],
         endpoint_registry: vec![],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![OfflineStubRule {
@@ -103,6 +104,7 @@ async fn invalid_config_maps_to_deterministic_failure() {
         allowed_webhook_urls: vec![],
         endpoint_registry: vec![],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
         offline_stub_rules: vec![],
@@ -142,6 +144,7 @@ async fn webhook_site_allows_only_allowlisted_target() {
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -193,6 +196,7 @@ async fn webhook_site_denies_non_allowlisted_target() {
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -240,6 +244,7 @@ async fn webhook_site_maps_provider_http_failure() {
         allowed_webhook_urls: vec!["https://webhook.site/allowed-token".to_string()],
         endpoint_registry: vec![],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     };
@@ -340,6 +345,7 @@ fn generic_cfg() -> ConnectorExecutionConfig {
             enabled: true,
         }],
         provider_connector_registry: vec![],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     }
@@ -347,11 +353,12 @@ fn generic_cfg() -> ConnectorExecutionConfig {
 
 fn provider_registry_entry(enabled: bool) -> ProviderConnectorRegistryEntry {
     ProviderConnectorRegistryEntry {
-        connector_ref: "telegram.owner_report_channel".to_string(),
+        connector_ref: "telegram.fixture_primary_channel".to_string(),
         provider: "telegram".to_string(),
         operation: "send_message".to_string(),
         required_scopes: vec!["contracts.run".to_string()],
-        allowed_operations: vec!["op_send_owner_report".to_string()],
+        allowed_operations: vec!["op_provider_send_message".to_string()],
+        target_resolver: None,
         secret_refs: HashMap::from([
             ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
             (
@@ -386,6 +393,35 @@ fn provider_http_cfg() -> ConnectorExecutionConfig {
         allowed_webhook_urls: vec![],
         endpoint_registry: vec![],
         provider_connector_registry: vec![provider_registry_entry(true)],
+        target_registry: vec![],
+        timeout_ms: 10_000,
+        max_retries: 0,
+    }
+}
+
+fn provider_runtime_chat_cfg() -> ConnectorExecutionConfig {
+    ConnectorExecutionConfig {
+        adapter_kind: "http_generic".to_string(),
+        allowed_connectors: vec!["provider.connector.v1".to_string()],
+        allowed_side_effect_intents: vec![SideEffectIntent::ExternalNetwork],
+        offline_stub_rules: vec![],
+        allowed_webhook_urls: vec![],
+        endpoint_registry: vec![],
+        provider_connector_registry: vec![ProviderConnectorRegistryEntry {
+            connector_ref: "telegram.runtime_chat".to_string(),
+            provider: "telegram".to_string(),
+            operation: "send_message".to_string(),
+            required_scopes: vec!["contracts.run".to_string()],
+            allowed_operations: vec!["*".to_string()],
+            target_resolver: Some("context:runtime_targets.current.chat_id".to_string()),
+            secret_refs: HashMap::from([(
+                "bot_token".to_string(),
+                "TELEGRAM_BOT_TOKEN".to_string(),
+            )]),
+            evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+            enabled: true,
+        }],
+        target_registry: vec![],
         timeout_ms: 10_000,
         max_retries: 0,
     }
@@ -756,7 +792,7 @@ async fn provider_connector_registry_resolves_and_completes_fake_execution() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_01".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_provider_send_message"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -772,7 +808,7 @@ async fn provider_connector_registry_resolves_and_completes_fake_execution() {
     assert_eq!(result.call.response["provider"], "telegram");
     assert_eq!(
         result.call.response["connector_ref"],
-        "telegram.owner_report_channel"
+        "telegram.fixture_primary_channel"
     );
     assert_eq!(result.call.response["operation"], "send_message");
     assert_eq!(result.call.response["response_preview"]["message_id"], 1001);
@@ -792,7 +828,7 @@ async fn provider_connector_registry_denies_unknown_connector_ref() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_02".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.unknown", "op_send_owner_report"),
+            request: provider_request_payload("telegram.unknown", "op_provider_send_message"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -817,7 +853,7 @@ async fn provider_connector_registry_denies_disabled_connector_ref() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_03".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_provider_send_message"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -841,7 +877,7 @@ async fn provider_connector_registry_denies_missing_scope() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_04".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_provider_send_message"),
             auth_context: json!({"scopes":["actions.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -865,7 +901,7 @@ async fn provider_connector_registry_denies_operation_not_allowlisted() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_05".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_wrong"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_wrong"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -900,7 +936,7 @@ async fn provider_connector_proxy_maps_missing_secrets() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_06".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_provider_send_message"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -943,7 +979,7 @@ async fn provider_connector_proxy_executes_through_first_provider_adapter() {
             connector_id: "provider.connector.v1".to_string(),
             call_id: "call_provider_07".to_string(),
             side_effect_intent: SideEffectIntent::ExternalNetwork,
-            request: provider_request_payload("telegram.owner_report_channel", "op_send_owner_report"),
+            request: provider_request_payload("telegram.fixture_primary_channel", "op_provider_send_message"),
             auth_context: json!({"scopes":["contracts.run"]}),
             credential_refs: vec![],
             policy_result: PolicySummary {
@@ -965,7 +1001,7 @@ async fn provider_connector_proxy_executes_through_first_provider_adapter() {
         "Owner report: revenue 1234 EUR"
     );
     assert_eq!(result.call.response["provider"], "telegram");
-    assert_eq!(result.call.response["connector_ref"], "telegram.owner_report_channel");
+    assert_eq!(result.call.response["connector_ref"], "telegram.fixture_primary_channel");
     assert_eq!(result.call.response["operation"], "send_message");
     assert_eq!(result.call.response["response_preview"]["ok"], true);
     assert_eq!(result.call.response["response_preview"]["message_id"], 123);
@@ -974,4 +1010,56 @@ async fn provider_connector_proxy_executes_through_first_provider_adapter() {
     assert!(!serialized.contains("secret-chat"));
     assert!(!serialized.contains("api.telegram.org"));
     assert!(result.call.response.get("chat").is_none());
+}
+
+#[tokio::test]
+async fn provider_connector_proxy_uses_resolved_chat_id_when_target_is_runtime_resolved() {
+    let last_request = Arc::new(Mutex::new(None));
+    let exec = GenericHttpConnectorExecutor::with_secret_resolver(
+        provider_runtime_chat_cfg(),
+        Arc::new(CapturingHttpClient {
+            result: Ok(WebhookHttpResult {
+                status: 200,
+                body_preview: r#"{"ok":true,"result":{"message_id":321,"chat":{"id":"runtime-chat"}}}"#
+                    .to_string(),
+            }),
+            last_request: Arc::clone(&last_request),
+        }),
+        Arc::new(StaticSecretResolver {
+            secrets: HashMap::from([(
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "secret-token".to_string(),
+            )]),
+        }),
+    );
+    let result = exec
+        .execute(ConnectorExecutionRequest {
+            connector_id: "provider.connector.v1".to_string(),
+            call_id: "call_provider_08".to_string(),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            request: json!({
+                "connector_ref": "telegram.runtime_chat",
+                "provider": "telegram",
+                "operation": "send_message",
+                "operation_id": "op_reply_in_current_chat",
+                "resolved_chat_id": "runtime-chat",
+                "text": "hello from runtime"
+            }),
+            auth_context: json!({"scopes":["contracts.run"]}),
+            credential_refs: vec![],
+            policy_result: PolicySummary {
+                decision: AdmissionDecision::Allow,
+                policy_version: "policy.default.v0".to_string(),
+                reason_code: "authorized".to_string(),
+            },
+            started_at: "2026-05-23T10:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+    let outbound = last_request.lock().unwrap().clone().unwrap();
+    let outbound_body = outbound.body.unwrap();
+    assert_eq!(outbound_body["chat_id"], "runtime-chat");
+    assert_eq!(outbound_body["text"], "hello from runtime");
+    assert_eq!(result.call.response["connector_ref"], "telegram.runtime_chat");
+    assert_eq!(result.call.response["response_preview"]["message_id"], 321);
 }

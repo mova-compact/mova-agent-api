@@ -15,11 +15,11 @@ Registry entry shape:
 ```json
 [
   {
-    "connector_ref": "telegram.owner_report_channel",
+    "connector_ref": "telegram.fixture_primary_channel",
     "provider": "telegram",
     "operation": "send_message",
     "required_scopes": ["contracts.run"],
-    "allowed_operations": ["op_send_owner_report"],
+    "allowed_operations": ["op_provider_send_message"],
     "secret_refs": {
       "bot_token": "TELEGRAM_BOT_TOKEN",
       "chat_id": "TELEGRAM_OWNER_REPORT_CHAT_ID"
@@ -35,7 +35,7 @@ Registry entry shape:
 Contract flow references only:
 
 - `connector.name = provider.connector.v1`
-- `connector_ref = telegram.owner_report_channel`
+- `connector_ref = telegram.fixture_primary_channel`
 
 Contract does not contain:
 
@@ -71,7 +71,7 @@ npx wrangler secret put TELEGRAM_OWNER_REPORT_CHAT_ID
 
 - provider: `telegram`
 - operation: `send_message`
-- contract demo: `provider_connector_owner_report_v0`
+- contract demo: `fixture_provider_connector_proxy_v0`
 
 Payload text comes from `input_payload.text` or fallback:
 

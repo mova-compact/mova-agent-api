@@ -107,7 +107,31 @@ pub struct ProviderConnectorRegistryEntry {
     pub required_scopes: Vec<String>,
     pub allowed_operations: Vec<String>,
     pub secret_refs: HashMap<String, String>,
+    #[serde(default)]
+    pub target_resolver: Option<String>,
     pub evidence_policy: EndpointEvidencePolicy,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTargetRegistryEntry {
+    pub target_ref: String,
+    pub connector_id: String,
+    #[serde(default)]
+    pub endpoint_ref: Option<String>,
+    #[serde(default)]
+    pub connector_ref: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    pub side_effect_intent: SideEffectIntent,
+    pub required_scopes: Vec<String>,
+    pub allowed_operations: Vec<String>,
+    #[serde(default)]
+    pub target_resolver: Option<String>,
     pub enabled: bool,
 }
 
@@ -129,6 +153,7 @@ pub struct ConnectorExecutionConfig {
     pub allowed_webhook_urls: Vec<String>,
     pub endpoint_registry: Vec<EndpointRegistryEntry>,
     pub provider_connector_registry: Vec<ProviderConnectorRegistryEntry>,
+    pub target_registry: Vec<RuntimeTargetRegistryEntry>,
     pub timeout_ms: u64,
     pub max_retries: u8,
 }
@@ -148,6 +173,7 @@ impl ConnectorExecutionConfig {
                 "connector.docs.v1".to_string(),
                 "connector.http.generic.v1".to_string(),
                 "provider.connector.v1".to_string(),
+                "tenant.ledger.v1".to_string(),
             ],
             allowed_side_effect_intents: vec![SideEffectIntent::None, SideEffectIntent::LocalOnly],
             offline_stub_rules: Vec::new(),
@@ -177,18 +203,103 @@ impl ConnectorExecutionConfig {
                 },
             ],
             provider_connector_registry: vec![ProviderConnectorRegistryEntry {
-                connector_ref: "telegram.owner_report_channel".to_string(),
+                connector_ref: "telegram.fixture_primary_channel".to_string(),
                 provider: "telegram".to_string(),
                 operation: "send_message".to_string(),
                 required_scopes: vec!["contracts.run".to_string()],
-                allowed_operations: vec!["op_send_owner_report".to_string()],
+                allowed_operations: vec!["op_provider_send_message".to_string()],
                 secret_refs: HashMap::from([
                     ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
                     ("chat_id".to_string(), "TELEGRAM_OWNER_REPORT_CHAT_ID".to_string()),
                 ]),
+                target_resolver: None,
+                evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                enabled: true,
+            },
+            ProviderConnectorRegistryEntry {
+                connector_ref: "telegram.runtime_chat".to_string(),
+                provider: "telegram".to_string(),
+                operation: "send_message".to_string(),
+                required_scopes: vec!["contracts.run".to_string()],
+                allowed_operations: vec!["*".to_string()],
+                secret_refs: HashMap::from([
+                    ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
+                ]),
+                target_resolver: Some("context:runtime_targets.current.chat_id".to_string()),
+                evidence_policy: EndpointEvidencePolicy::SummaryOnly,
+                enabled: true,
+            },
+            ProviderConnectorRegistryEntry {
+                connector_ref: "telegram.admin_chat".to_string(),
+                provider: "telegram".to_string(),
+                operation: "send_message".to_string(),
+                required_scopes: vec!["contracts.run".to_string()],
+                allowed_operations: vec!["*".to_string()],
+                secret_refs: HashMap::from([
+                    ("bot_token".to_string(), "TELEGRAM_BOT_TOKEN".to_string()),
+                ]),
+                target_resolver: Some("context:runtime_targets.admin.chat_id".to_string()),
                 evidence_policy: EndpointEvidencePolicy::SummaryOnly,
                 enabled: true,
             }],
+            target_registry: vec![
+                RuntimeTargetRegistryEntry {
+                    target_ref: "connector_target://telegram.fixture_primary_channel.send_message".to_string(),
+                    connector_id: "provider.connector.v1".to_string(),
+                    endpoint_ref: None,
+                    connector_ref: Some("telegram.fixture_primary_channel".to_string()),
+                    provider: Some("telegram".to_string()),
+                    operation: Some("send_message".to_string()),
+                    method: Some("POST".to_string()),
+                    side_effect_intent: SideEffectIntent::ExternalNetwork,
+                    required_scopes: vec!["contracts.run".to_string()],
+                    allowed_operations: vec!["op_provider_send_message".to_string()],
+                    target_resolver: None,
+                    enabled: true,
+                },
+                RuntimeTargetRegistryEntry {
+                    target_ref: "binding://telegram_current_chat_send_message".to_string(),
+                    connector_id: "provider.connector.v1".to_string(),
+                    endpoint_ref: None,
+                    connector_ref: Some("telegram.runtime_chat".to_string()),
+                    provider: Some("telegram".to_string()),
+                    operation: Some("send_message".to_string()),
+                    method: Some("POST".to_string()),
+                    side_effect_intent: SideEffectIntent::ExternalNetwork,
+                    required_scopes: vec!["contracts.run".to_string()],
+                    allowed_operations: vec![],
+                    target_resolver: Some("context:runtime_targets.current.chat_id".to_string()),
+                    enabled: true,
+                },
+                RuntimeTargetRegistryEntry {
+                    target_ref: "binding://telegram_admin_chat_send_message".to_string(),
+                    connector_id: "provider.connector.v1".to_string(),
+                    endpoint_ref: None,
+                    connector_ref: Some("telegram.admin_chat".to_string()),
+                    provider: Some("telegram".to_string()),
+                    operation: Some("send_message".to_string()),
+                    method: Some("POST".to_string()),
+                    side_effect_intent: SideEffectIntent::ExternalNetwork,
+                    required_scopes: vec!["contracts.run".to_string()],
+                    allowed_operations: vec![],
+                    target_resolver: Some("context:runtime_targets.admin.chat_id".to_string()),
+                    enabled: true,
+                },
+                RuntimeTargetRegistryEntry {
+                    target_ref: "binding://tenant_ledger_write".to_string(),
+                    connector_id: "tenant.ledger.v1".to_string(),
+                    endpoint_ref: None,
+                    connector_ref: None,
+                    provider: Some("tenant".to_string()),
+                    operation: Some("write_record".to_string()),
+                    method: Some("WRITE".to_string()),
+                    side_effect_intent: SideEffectIntent::LocalOnly,
+                    required_scopes: vec!["contracts.run".to_string()],
+                    allowed_operations: vec![],
+                    target_resolver: None,
+                    enabled: true,
+                },
+            ],
             timeout_ms: 10_000,
             max_retries: 0,
         }
@@ -344,10 +455,36 @@ impl ConnectorExecutionConfig {
                     "allowed_operations must not be empty",
                 ));
             }
-            if !target.secret_refs.contains_key("bot_token") || !target.secret_refs.contains_key("chat_id") {
+            if !target.secret_refs.contains_key("bot_token") {
                 return Err(ConnectorExecutionError::new(
                     "provider_connector_config_invalid",
-                    "telegram provider target requires bot_token and chat_id secret refs",
+                    "telegram provider target requires bot_token secret ref",
+                ));
+            }
+            if !target.secret_refs.contains_key("chat_id") && target.target_resolver.is_none() {
+                return Err(ConnectorExecutionError::new(
+                    "provider_connector_config_invalid",
+                    "telegram provider target requires chat_id secret ref or target_resolver",
+                ));
+            }
+        }
+        for target in &self.target_registry {
+            if target.target_ref.trim().is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "target_registry_invalid",
+                    "target_ref must not be empty",
+                ));
+            }
+            if target.connector_id.trim().is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "target_registry_invalid",
+                    "connector_id must not be empty",
+                ));
+            }
+            if target.required_scopes.is_empty() {
+                return Err(ConnectorExecutionError::new(
+                    "target_registry_invalid",
+                    "required_scopes must not be empty",
                 ));
             }
         }
@@ -628,7 +765,7 @@ impl DeterministicLocalConnectorExecutor {
         if !target
             .allowed_operations
             .iter()
-            .any(|allowed| allowed == &operation_id)
+            .any(|allowed| allowed == "*" || allowed == &operation_id)
         {
             return Err(ConnectorExecutionError::new(
                 "connector_operation_not_allowed",
@@ -1319,7 +1456,7 @@ impl GenericHttpConnectorExecutor {
         if !target
             .allowed_operations
             .iter()
-            .any(|allowed| allowed == &operation_id)
+            .any(|allowed| allowed == "*" || allowed == &operation_id)
         {
             return Err(ConnectorExecutionError::new(
                 "connector_operation_not_allowed",
@@ -1370,18 +1507,23 @@ impl GenericHttpConnectorExecutor {
             .secret_refs
             .get("bot_token")
             .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "bot_token secret ref is missing"))?;
-        let chat_id_secret_ref = target
-            .secret_refs
-            .get("chat_id")
-            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "chat_id secret ref is missing"))?;
         let bot_token = self
             .secret_resolver
             .resolve(token_secret_ref)?
             .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "required secret missing: TELEGRAM_BOT_TOKEN"))?;
-        let chat_id = self
-            .secret_resolver
-            .resolve(chat_id_secret_ref)?
-            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "required secret missing: TELEGRAM_OWNER_REPORT_CHAT_ID"))?;
+        let chat_id = request
+            .request
+            .get("resolved_chat_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| {
+                target
+                    .secret_refs
+                    .get("chat_id")
+                    .and_then(|chat_id_secret_ref| self.secret_resolver.resolve(chat_id_secret_ref).ok().flatten())
+            })
+            .ok_or_else(|| ConnectorExecutionError::new("connector_secret_missing", "required chat target is missing"))?;
         let text = request
             .request
             .get("text")
@@ -1647,6 +1789,7 @@ mod tests {
             allowed_webhook_urls: vec![],
             endpoint_registry: vec![],
             provider_connector_registry: vec![],
+            target_registry: vec![],
             timeout_ms: 10_000,
             max_retries: 0,
         };

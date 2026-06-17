@@ -65,14 +65,14 @@
     ],
     "provider_connector_registry": [
       {
-        "connector_ref": "telegram.owner_report_channel",
+        "connector_ref": "telegram.fixture_primary_channel",
         "provider": "telegram",
         "operation": "send_message",
         "required_scopes": [
           "contracts.run"
         ],
         "allowed_operations": [
-          "op_send_owner_report"
+          "op_provider_send_message"
         ],
         "secret_refs": {
           "bot_token": "TELEGRAM_BOT_TOKEN",

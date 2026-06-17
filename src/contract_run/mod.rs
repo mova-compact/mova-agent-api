@@ -3,8 +3,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::contract_step::{ContractStep, ContractStepStatus, ContractStepType};
-use crate::contracts::{flow_step_by_id, pick_next_target, AdmittedContract};
+use crate::contracts::{flow_step_by_id, normalized_binding_kind, pick_next_target, runtime_binding_for_step, AdmittedContract};
 use crate::gate::{HumanGate, HumanGateStatus};
+use crate::observation::ObservationRecord;
 use crate::operation_admission::OperationAdmission;
 use crate::request::{Actor, AuthContext, Source};
 
@@ -50,7 +51,11 @@ pub struct ContractRunState {
     pub contract_id: String,
     pub tenant_id: String,
     pub status: ContractRunStatus,
+    pub actor: Actor,
+    pub source: Source,
     pub auth_context: AuthContext,
+    pub inputs: Value,
+    pub context: Value,
     pub current_step_id: String,
     pub next_allowed_operation_id: Option<String>,
     pub completed_step_ids: Vec<String>,
@@ -63,6 +68,8 @@ pub struct ContractRunState {
     pub last_step_idempotency_key: Option<String>,
     pub steps: Vec<ContractStep>,
     pub gate: Option<HumanGate>,
+    #[serde(default)]
+    pub observations: Vec<ObservationRecord>,
     pub step_execution_records: HashMap<String, StepExecutionRecord>,
     pub last_admission: Option<OperationAdmission>,
 }
@@ -211,6 +218,25 @@ fn validate_connector_metadata(admitted_contract: &AdmittedContract) -> Result<(
         if step_type != ContractStepType::ConnectorAction {
             continue;
         }
+        if step.connector.is_none() {
+            let binding = runtime_binding_for_step(admitted_contract, &step.id).ok_or_else(|| {
+                ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!("connector_action step {} missing runtime binding materialization", step.id),
+                )
+            })?;
+            let binding_kind = normalized_binding_kind(&binding.binding_kind);
+            if binding_kind != "connector_proxy" && binding_kind != "mcp_tool" {
+                return Err(ContractRunDomainError::new(
+                    "contract_connector_metadata_missing",
+                    format!(
+                        "connector_action step {} uses unsupported binding_kind {}",
+                        step.id, binding.binding_kind
+                    ),
+                ));
+            }
+            continue;
+        }
         let connector = step.connector.as_ref().ok_or_else(|| {
             ContractRunDomainError::new(
                 "contract_connector_metadata_missing",
@@ -312,10 +338,10 @@ fn validate_transition_targets(admitted_contract: &AdmittedContract) -> Result<(
             ));
         }
         for (outcome, target) in next {
-            if !matches!(outcome.as_str(), "default" | "approve" | "reject" | "error") {
+            if outcome.trim().is_empty() {
                 return Err(ContractRunDomainError::new(
                     "contract_transition_invalid",
-                    format!("step {} has unsupported transition outcome {}", step.id, outcome),
+                    format!("step {} has empty transition outcome", step.id),
                 ));
             }
             let target_object = target.as_object().ok_or_else(|| {
@@ -342,12 +368,12 @@ fn validate_transition_targets(admitted_contract: &AdmittedContract) -> Result<(
                 continue;
             }
             if let Some(terminal_target) = terminal_target {
-                if !matches!(terminal_target, "completed" | "blocked" | "failed") {
+                if terminal_target.trim().is_empty() {
                     return Err(ContractRunDomainError::new(
                         "contract_transition_invalid",
                         format!(
-                            "step {} transition {} uses unsupported terminal {}",
-                            step.id, outcome, terminal_target
+                            "step {} transition {} has empty terminal target",
+                            step.id, outcome
                         ),
                     ));
                 }
@@ -411,10 +437,10 @@ pub fn contract_steps_from_flow(
     Ok(steps)
 }
 
-pub fn resolve_flow_transition(
+pub fn resolve_flow_transition_by_key(
     admitted_contract: &AdmittedContract,
     current_step_id: &str,
-    outcome: ContractStepOutcome,
+    outcome_key: &str,
 ) -> Result<ContractTransition, ContractRunDomainError> {
     let step = flow_step_by_id(&admitted_contract.flow, current_step_id).ok_or_else(|| {
         ContractRunDomainError::new(
@@ -422,13 +448,13 @@ pub fn resolve_flow_transition(
             format!("missing contract step: {current_step_id}"),
         )
     })?;
-    let target = pick_next_target(step, outcome.as_flow_key()).ok_or_else(|| {
+    let target = pick_next_target(step, outcome_key).ok_or_else(|| {
         ContractRunDomainError::new(
             "transition_not_found",
             format!(
                 "missing transition for step {} and outcome {}",
                 current_step_id,
-                outcome.as_flow_key()
+                outcome_key
             ),
         )
     })?;
@@ -464,6 +490,14 @@ pub fn resolve_flow_transition(
     ))
 }
 
+pub fn resolve_flow_transition(
+    admitted_contract: &AdmittedContract,
+    current_step_id: &str,
+    outcome: ContractStepOutcome,
+) -> Result<ContractTransition, ContractRunDomainError> {
+    resolve_flow_transition_by_key(admitted_contract, current_step_id, outcome.as_flow_key())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +516,7 @@ mod tests {
             admitted: Some(true),
             manifest: None,
             flow,
+            runtime_binding_set: None,
             policy: None,
             connector_requirements: None,
             evidence_expectations: None,
@@ -564,5 +599,67 @@ mod tests {
         });
         let err = resolve_flow_transition(&contract, "start", ContractStepOutcome::Default).unwrap_err();
         assert_eq!(err.code, "transition_not_found");
+    }
+
+    #[test]
+    fn validate_contract_run_flow_accepts_named_business_outcomes() {
+        let contract = admitted_contract_with_flow(ContractFlow {
+            version: "1.0".to_string(),
+            description: "x".to_string(),
+            entry: "start".to_string(),
+            steps: vec![crate::contracts::ContractFlowStep {
+                id: "start".to_string(),
+                step_type: Some("deterministic_action".to_string()),
+                operation_id: Some("op_start".to_string()),
+                execution_mode: "DETERMINISTIC".to_string(),
+                connector: None,
+                next: json!({
+                    "telegram_message": {"step": "finish"},
+                    "invalid_trigger": {"terminal": "failed"}
+                }),
+            }, crate::contracts::ContractFlowStep {
+                id: "finish".to_string(),
+                step_type: Some("terminal".to_string()),
+                operation_id: None,
+                execution_mode: "DETERMINISTIC".to_string(),
+                connector: None,
+                next: json!({"default": {"terminal": "completed"}}),
+            }],
+        });
+        assert!(validate_contract_run_flow(&contract).is_ok());
+    }
+
+    #[test]
+    fn resolve_flow_transition_by_key_supports_named_business_outcomes() {
+        let contract = admitted_contract_with_flow(ContractFlow {
+            version: "1.0".to_string(),
+            description: "x".to_string(),
+            entry: "start".to_string(),
+            steps: vec![crate::contracts::ContractFlowStep {
+                id: "start".to_string(),
+                step_type: Some("deterministic_action".to_string()),
+                operation_id: Some("op_start".to_string()),
+                execution_mode: "DETERMINISTIC".to_string(),
+                connector: None,
+                next: json!({
+                    "service": {"step": "finish"},
+                    "unknown": {"terminal": "failed"}
+                }),
+            }, crate::contracts::ContractFlowStep {
+                id: "finish".to_string(),
+                step_type: Some("terminal".to_string()),
+                operation_id: None,
+                execution_mode: "DETERMINISTIC".to_string(),
+                connector: None,
+                next: json!({"default": {"terminal": "completed"}}),
+            }],
+        });
+        let transition = resolve_flow_transition_by_key(&contract, "start", "service").unwrap();
+        assert_eq!(
+            transition,
+            ContractTransition::NextStep {
+                step_id: "finish".to_string()
+            }
+        );
     }
 }

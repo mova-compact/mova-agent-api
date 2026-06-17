@@ -1,5 +1,6 @@
 //! Local contract loading and minimal admission bridge for MOVA Agent API V0.
 
+use crate::connectors::RuntimeTargetRegistryEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -39,6 +40,55 @@ pub struct ContractConnectorSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractRuntimeBinding {
+    #[serde(default)]
+    pub schema_id: Option<String>,
+    #[serde(default)]
+    pub binding_id: Option<String>,
+    pub step_id: String,
+    pub execution_mode: String,
+    pub binding_kind: String,
+    pub binding_ref: String,
+    #[serde(default)]
+    pub input_adapter_ref: Option<String>,
+    #[serde(default)]
+    pub output_adapter_ref: Option<String>,
+    #[serde(default)]
+    pub retry_policy_ref: Option<String>,
+    #[serde(default)]
+    pub timeout_policy_ref: Option<String>,
+    #[serde(default)]
+    pub failure_binding_ref: Option<String>,
+    #[serde(default)]
+    pub entry_point: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub sandbox: Option<bool>,
+    #[serde(default)]
+    pub notes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractRuntimeBindingSet {
+    #[serde(default)]
+    pub schema_id: Option<String>,
+    #[serde(default)]
+    pub binding_set_id: Option<String>,
+    #[serde(default)]
+    pub flow_ref: Option<String>,
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    #[serde(default)]
+    pub tenant_scope: Option<String>,
+    pub bindings: Vec<ContractRuntimeBinding>,
+    #[serde(default)]
+    pub set_invariants: Option<Vec<String>>,
+    #[serde(default)]
+    pub contract_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdmittedContract {
     pub contract_id: String,
     pub execution_type: String,
@@ -50,6 +100,7 @@ pub struct AdmittedContract {
     pub admitted: Option<bool>,
     pub manifest: Option<Value>,
     pub flow: ContractFlow,
+    pub runtime_binding_set: Option<ContractRuntimeBindingSet>,
     pub policy: Option<Value>,
     pub connector_requirements: Option<ContractConnectorRequirements>,
     pub evidence_expectations: Option<Value>,
@@ -115,6 +166,146 @@ pub fn validate_admitted_contract(contract: &AdmittedContract) -> Result<(), Con
         }
     }
     validate_flow_shape(&contract.flow, &declared_connectors)
+        .and_then(|_| validate_runtime_binding_set(contract))
+}
+
+pub fn validate_runtime_target_alignment(
+    contract: &AdmittedContract,
+    target_registry: &[RuntimeTargetRegistryEntry],
+) -> Result<(), ContractRegistryError> {
+    for step in &contract.flow.steps {
+        if step.step_type.as_deref() != Some("connector_action") {
+            continue;
+        }
+        let operation_id = step.operation_id.as_deref().unwrap_or_default().trim();
+        if operation_id.is_empty() {
+            continue;
+        }
+        if let Some(connector) = &step.connector {
+            let connector_ref = connector
+                .get("connector_ref")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim();
+            let operation = connector
+                .get("operation")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim();
+            if connector_ref.is_empty() {
+                continue;
+            }
+            let matching_targets = target_registry
+                .iter()
+                .filter(|target| {
+                    target.enabled
+                        && target.connector_ref.as_deref() == Some(connector_ref)
+                        && (operation.is_empty() || target.operation.as_deref() == Some(operation))
+                })
+                .collect::<Vec<_>>();
+            if matching_targets.is_empty() {
+                continue;
+            }
+            let allows_operation = matching_targets.iter().any(|target| {
+                target.allowed_operations.is_empty()
+                    || target
+                        .allowed_operations
+                        .iter()
+                        .any(|allowed| allowed == "*" || allowed == operation_id)
+            });
+            if allows_operation {
+                continue;
+            }
+            let target = matching_targets[0];
+            return Err(ContractRegistryError::new(
+                "contract_runtime_target_invalid",
+                format!(
+                    "connector_action step {} operation_id {} is not allowed for target {} (allowed_operations: {})",
+                    step.id,
+                    operation_id,
+                    target.target_ref,
+                    target.allowed_operations.join(", ")
+                ),
+            ));
+        }
+        let Some(binding) = runtime_binding_for_step(contract, &step.id) else {
+            continue;
+        };
+        let Some(target) = target_registry
+            .iter()
+            .find(|target| target.enabled && target.target_ref == binding.binding_ref)
+        else {
+            continue;
+        };
+        if target.allowed_operations.is_empty()
+            || target
+                .allowed_operations
+                .iter()
+                .any(|allowed| allowed == "*" || allowed == operation_id)
+        {
+            continue;
+        }
+        return Err(ContractRegistryError::new(
+            "contract_runtime_target_invalid",
+            format!(
+                "connector_action step {} operation_id {} is not allowed for target {} (allowed_operations: {})",
+                step.id,
+                operation_id,
+                target.target_ref,
+                target.allowed_operations.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_binding_set(contract: &AdmittedContract) -> Result<(), ContractRegistryError> {
+    let Some(binding_set) = &contract.runtime_binding_set else {
+        return Ok(());
+    };
+    let mut seen = HashSet::new();
+    let step_modes = contract
+        .flow
+        .steps
+        .iter()
+        .map(|step| (step.id.as_str(), step.execution_mode.as_str()))
+        .collect::<HashMap<_, _>>();
+    for binding in &binding_set.bindings {
+        if binding.step_id.trim().is_empty() {
+            return Err(ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                "runtime binding step_id must not be empty".to_string(),
+            ));
+        }
+        if binding.binding_kind.trim().is_empty() || binding.binding_ref.trim().is_empty() {
+            return Err(ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                format!("runtime binding for step {} is missing binding_kind or binding_ref", binding.step_id),
+            ));
+        }
+        if !seen.insert(binding.step_id.clone()) {
+            return Err(ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                format!("duplicate runtime binding for step {}", binding.step_id),
+            ));
+        }
+        let Some(step_mode) = step_modes.get(binding.step_id.as_str()) else {
+            return Err(ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                format!("runtime binding points to unknown step {}", binding.step_id),
+            ));
+        };
+        if *step_mode != binding.execution_mode {
+            return Err(ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                format!(
+                    "runtime binding execution_mode mismatch for step {}: flow={} binding={}",
+                    binding.step_id, step_mode, binding.execution_mode
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_flow_shape(
@@ -263,6 +454,19 @@ pub fn parse_inline_flow_json(value: &Value) -> Result<ContractFlow, ContractReg
     })
 }
 
+pub fn parse_flow_json(value: &Value) -> Result<ContractFlow, ContractRegistryError> {
+    serde_json::from_value(value.clone()).map_err(|err| {
+        ContractRegistryError::new(
+            "contract_flow_parse_failed",
+            format!("failed to parse flow.json: {err}"),
+        )
+    })
+}
+
+pub fn manifest_contract_id(value: &Value) -> Option<&str> {
+    value.get("contract_id").and_then(|v| v.as_str())
+}
+
 pub fn parse_contract_connector_requirements(value: Option<Value>) -> Result<Option<ContractConnectorRequirements>, ContractRegistryError> {
     match value {
         None => Ok(None),
@@ -275,8 +479,41 @@ pub fn parse_contract_connector_requirements(value: Option<Value>) -> Result<Opt
     }
 }
 
+pub fn parse_runtime_binding_set(value: Option<Value>) -> Result<Option<ContractRuntimeBindingSet>, ContractRegistryError> {
+    match value {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v).map(Some).map_err(|err| {
+            ContractRegistryError::new(
+                "contract_runtime_binding_invalid",
+                format!("failed to parse runtime_binding_set: {err}"),
+            )
+        }),
+    }
+}
+
 pub fn flow_step_by_id<'a>(flow: &'a ContractFlow, step_id: &str) -> Option<&'a ContractFlowStep> {
     flow.steps.iter().find(|s| s.id == step_id)
+}
+
+pub fn normalized_binding_kind(binding_kind: &str) -> &str {
+    match binding_kind {
+        "handler" => "internal_handler",
+        "storage_write" | "connector_call" => "connector_proxy",
+        "telegram_human_gate" => "human_gate_channel",
+        other => other,
+    }
+}
+
+pub fn runtime_binding_for_step<'a>(
+    contract: &'a AdmittedContract,
+    step_id: &str,
+) -> Option<&'a ContractRuntimeBinding> {
+    contract
+        .runtime_binding_set
+        .as_ref()?
+        .bindings
+        .iter()
+        .find(|binding| binding.step_id == step_id)
 }
 
 pub fn pick_next_target(step: &ContractFlowStep, outcome: &str) -> Option<Value> {
@@ -302,6 +539,7 @@ pub fn extract_outcomes_map(input_payload: &Value) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::{RuntimeTargetRegistryEntry, SideEffectIntent};
 
     #[test]
     fn map_contract_to_agent_request_uses_contract_identity() {
@@ -346,5 +584,61 @@ mod tests {
         };
         let err = validate_flow_shape(&flow, &HashSet::new()).unwrap_err();
         assert_eq!(err.code, "contract_transition_target_missing");
+    }
+
+    #[test]
+    fn runtime_target_alignment_rejects_mismatched_operation_id() {
+        let contract = AdmittedContract {
+            contract_id: "owner_report".to_string(),
+            execution_type: "agent".to_string(),
+            source_type: None,
+            source_url: None,
+            commit_sha: None,
+            contract_path: None,
+            registered_at: None,
+            admitted: Some(true),
+            manifest: None,
+            flow: ContractFlow {
+                version: "1.0".to_string(),
+                description: "x".to_string(),
+                entry: "deliver".to_string(),
+                steps: vec![ContractFlowStep {
+                    id: "deliver".to_string(),
+                    step_type: Some("connector_action".to_string()),
+                    operation_id: Some("op_deliver_telegram_report".to_string()),
+                    execution_mode: "DETERMINISTIC".to_string(),
+                    next: json!({"default": {"terminal": "completed"}}),
+                    connector: Some(json!({
+                        "name": "provider.connector.v1",
+                        "connector_ref": "telegram.owner_report_channel",
+                        "operation": "send_message",
+                        "side_effect_intent": "external_network"
+                    })),
+                }],
+            },
+            runtime_binding_set: None,
+            policy: None,
+            connector_requirements: None,
+            evidence_expectations: None,
+            open_questions: None,
+        };
+        let target_registry = vec![RuntimeTargetRegistryEntry {
+            target_ref: "binding://telegram_owner_report_channel_send_message".to_string(),
+            connector_id: "provider.connector.v1".to_string(),
+            endpoint_ref: None,
+            connector_ref: Some("telegram.owner_report_channel".to_string()),
+            provider: Some("telegram".to_string()),
+            operation: Some("send_message".to_string()),
+            method: Some("POST".to_string()),
+            side_effect_intent: SideEffectIntent::ExternalNetwork,
+            required_scopes: vec!["contracts.run".to_string()],
+            allowed_operations: vec!["op_send_owner_report".to_string()],
+            target_resolver: Some("context:runtime_targets.admin.chat_id".to_string()),
+            enabled: true,
+        }];
+        let err = validate_runtime_target_alignment(&contract, &target_registry).unwrap_err();
+        assert_eq!(err.code, "contract_runtime_target_invalid");
+        assert!(err.message.contains("op_deliver_telegram_report"));
+        assert!(err.message.contains("op_send_owner_report"));
     }
 }

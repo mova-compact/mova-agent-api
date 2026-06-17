@@ -75,7 +75,7 @@ Evidence is exposed through existing:
 
 Canonical proof contract used:
 
-- `barbershop.owner_report.daily.v0`
+- `fixture_contract_admission_bridge_v0`
 
 Proven operations:
 

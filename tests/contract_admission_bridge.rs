@@ -16,7 +16,7 @@ fn contract_flow_with_gate() -> Value {
                 "step_type": "connector_action",
                 "execution_mode": "DETERMINISTIC",
                 "connector": {
-                    "name":"barbershop_daily_data_source",
+                    "name":"fixture_data_source",
                     "endpoint_ref":"webhook_site_test",
                     "method":"POST",
                     "side_effect_intent":"external_network"
@@ -53,17 +53,47 @@ fn contract_flow_with_gate() -> Value {
     })
 }
 
+fn contract_manifest() -> Value {
+    json!({
+        "contract_id": "fixture_contract_admission_bridge_v0",
+        "contract_name": "Fixture Contract Admission Bridge",
+        "version": "1.0.0",
+        "layer": "operator",
+        "skill_id": "fixture_contract_admission_bridge",
+        "description": "Fixture contract package for package-native admission tests.",
+        "author": "tests",
+        "spec_version": "mova-contract-spec@1.0",
+        "execution_runtime": "mova-agent-api",
+        "execution_type": "agent",
+        "primary_outputs": ["delivery_result"],
+        "terminal_outcomes": ["completed", "blocked"],
+        "step_count": 3,
+        "ai_atomic_steps": 0,
+        "deterministic_steps": 2,
+        "human_gate_steps": 1,
+        "estimated_cost": "Low",
+        "files": {
+            "flow": "flow.json",
+            "policy": "policy.json",
+            "connectors": "connector_requirements.json",
+            "evidence": "evidence_expectations.json"
+        }
+    })
+}
+
 #[tokio::test]
 async fn contract_bridge_register_list_inspect_run_and_decision() {
     let app = router();
 
     let register_payload = json!({
-        "contract_id": "barbershop.owner_report.daily.v0",
+        "contract_id": "fixture_contract_admission_bridge_v0",
         "execution_type": "agent",
-        "inline_flow_json": contract_flow_with_gate(),
+        "mode": "local_packaged",
+        "manifest": contract_manifest(),
+        "flow_json": contract_flow_with_gate(),
         "connector_requirements": {
-            "contract_id": "barbershop.owner_report.daily.v0",
-            "connectors": [{"name":"barbershop_daily_data_source"},{"name":"telegram"}]
+            "contract_id": "fixture_contract_admission_bridge_v0",
+            "connectors": [{"name":"fixture_data_source"},{"name":"telegram"}]
         },
         "policy": {"allowed_actions":["x"],"forbidden_actions":["y"]},
         "evidence_expectations": {"audit_expectations":["final_run_status"]}
@@ -101,7 +131,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["contract_id"] == "barbershop.owner_report.daily.v0")
+            .any(|item| item["contract_id"] == "fixture_contract_admission_bridge_v0")
     );
 
     let get_response = app
@@ -109,7 +139,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/contracts/barbershop.owner_report.daily.v0")
+                .uri("/contracts/fixture_contract_admission_bridge_v0")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -129,7 +159,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/barbershop.owner_report.daily.v0/run")
+                .uri("/contracts/fixture_contract_admission_bridge_v0/run")
                 .header("content-type", "application/json")
                 .body(Body::from(run_wait_payload.to_string()))
                 .unwrap(),
@@ -171,7 +201,7 @@ async fn contract_bridge_register_list_inspect_run_and_decision() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/contracts/barbershop.owner_report.daily.v0/run")
+                .uri("/contracts/fixture_contract_admission_bridge_v0/run")
                 .header("content-type", "application/json")
                 .body(Body::from(run_success_payload.to_string()))
                 .unwrap(),
@@ -189,10 +219,10 @@ async fn contract_register_rejects_github_source_without_commit_sha() {
     let app = router();
     let payload = json!({
         "mode": "github_source",
-        "contract_id": "barbershop.owner_report.daily.v0",
+        "contract_id": "fixture_contract_admission_bridge_v0",
         "execution_type": "agent",
-        "source_url": "https://github.com/mova-compact/barbershop-contracts",
-        "contract_path": "contracts/barbershop-owner-report-daily"
+        "source_url": "https://github.com/mova-compact/fixture-contracts",
+        "contract_path": "contracts/admission-bridge-fixture"
     });
     let response = app
         .oneshot(
@@ -213,11 +243,11 @@ async fn contract_register_rejects_non_github_source() {
     let app = router();
     let payload = json!({
         "mode": "github_source",
-        "contract_id": "barbershop.owner_report.daily.v0",
+        "contract_id": "fixture_contract_admission_bridge_v0",
         "execution_type": "agent",
         "source_url": "https://example.com/contracts",
         "commit_sha": "3caaaef",
-        "contract_path": "contracts/barbershop-owner-report-daily"
+        "contract_path": "contracts/admission-bridge-fixture"
     });
     let response = app
         .oneshot(
@@ -238,9 +268,10 @@ async fn contract_register_accepts_local_packaged_inline_mode() {
     let app = router();
     let payload = json!({
         "mode": "local_packaged",
-        "contract_id": "barbershop.owner_report.daily.v0",
+        "contract_id": "fixture_contract_admission_bridge_v0",
         "execution_type": "agent",
-        "inline_flow_json": contract_flow_with_gate()
+        "manifest": contract_manifest(),
+        "flow_json": contract_flow_with_gate()
     });
     let response = app
         .oneshot(
@@ -264,11 +295,11 @@ async fn contract_register_accepts_github_source_with_commit_pin() {
     let app = router();
     let payload = json!({
         "mode": "github_source",
-        "contract_id": "barbershop.owner_report.daily.v0",
+        "contract_id": "fixture_contract_admission_bridge_v0",
         "execution_type": "agent",
-        "source_url": "https://github.com/mova-compact/barbershop-contracts",
+        "source_url": "https://github.com/mova-compact/fixture-contracts",
         "commit_sha": "3caaaef",
-        "contract_path": "contracts/barbershop-owner-report-daily"
+        "contract_path": "contracts/admission-bridge-fixture"
     });
     let response = app
         .oneshot(

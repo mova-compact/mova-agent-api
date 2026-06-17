@@ -3,6 +3,7 @@
 use crate::auth::AuthTrustConfig;
 use crate::connectors::{
     ConnectorExecutionConfig, EndpointEvidencePolicy, EndpointRegistryEntry, ProviderConnectorRegistryEntry,
+    RuntimeTargetRegistryEntry,
     SideEffectIntent,
 };
 use crate::secrets::{SecretBoundaryError, SecretRef, SecretRefKind};
@@ -178,6 +179,15 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
             })?;
             cfg.connectors.provider_connector_registry = parsed;
         }
+        if let Ok(value) = std::env::var("MOVA_RUNTIME_TARGET_REGISTRY_JSON") {
+            let parsed: Vec<RuntimeTargetRegistryEntry> = serde_json::from_str(&value).map_err(|_| {
+                RuntimeConfigError::new(
+                    "connector_config_invalid",
+                    "MOVA_RUNTIME_TARGET_REGISTRY_JSON must be valid runtime target registry JSON array",
+                )
+            })?;
+            cfg.connectors.target_registry = parsed;
+        }
         if cfg.connectors.adapter_kind == "webhook_site" {
             if cfg.connectors.allowed_connectors.is_empty() {
                 cfg.connectors.allowed_connectors = vec!["connector.webhook_site.v1".to_string()];
@@ -195,7 +205,10 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
         }
         if cfg.connectors.adapter_kind == "http_generic" {
             if cfg.connectors.allowed_connectors.is_empty() {
-                cfg.connectors.allowed_connectors = vec!["connector.http.generic.v1".to_string()];
+                cfg.connectors.allowed_connectors = vec![
+                    "connector.http.generic.v1".to_string(),
+                    "tenant.ledger.v1".to_string(),
+                ];
             }
             if !cfg
                 .connectors
@@ -206,6 +219,16 @@ impl RuntimeProvider for LocalEnvRuntimeProvider {
                 cfg.connectors
                     .allowed_connectors
                     .push("provider.connector.v1".to_string());
+            }
+            if !cfg
+                .connectors
+                .allowed_connectors
+                .iter()
+                .any(|value| value == "tenant.ledger.v1")
+            {
+                cfg.connectors
+                    .allowed_connectors
+                    .push("tenant.ledger.v1".to_string());
             }
             if cfg
                 .connectors
